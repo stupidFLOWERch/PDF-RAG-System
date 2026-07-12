@@ -1,81 +1,260 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pdf_loader import is_heading
+import re
+
+from pdf_loader import (
+    get_heading_score,
+    calculate_document_avg_size
+)
+
+
+def classify_heading_level(element, largest_heading_size):
+
+    avg_size = (
+        sum(element["size"])
+        /
+        len(element["size"])
+    )
+
+    if avg_size >= largest_heading_size:
+        return 1
+
+    else:
+        return 2
+
+def flatten_sections(sections, document_title):
+
+    documents = []
+
+
+    for section in sections:
+
+        heading = section["heading"]
+
+
+        # 没有subsection
+        if not section["subsections"]:
+
+
+            if section.get("content"):
+
+                text = (
+                    heading
+                    + "\n\n"
+                    + section["content"]
+                )
+
+
+                documents.append({
+
+                    "text": text,
+
+                    "metadata": {
+
+                        "title": document_title,
+
+                        "heading": heading,
+
+                        "subheading": None,
+
+                        "page": section["page"]
+
+                    }
+
+                })
+
+
+
+        # 有subsection
+        else:
+
+
+            for subsection in section["subsections"]:
+
+
+                subheading = subsection["subheading"]
+
+                content = subsection["content"]
+
+
+                text = (
+                    heading
+                    + "\n\n"
+                    + subheading
+                    + "\n\n"
+                    + content
+                )
+
+
+                documents.append({
+
+                    "text": text,
+
+                    "metadata": {
+
+                        "title": document_title,
+
+                        "heading": heading,
+
+                        "subheading": subheading,
+
+                        "page": section["page"]
+
+                    }
+
+                })
+
+
+    return documents
 
 def create_sections(elements):
 
     sections = []
+
     current_section = None
-    is_previous_header = False
-    first_heading = True
+    current_subsection = None
+
+    document_title = None
+
+    document_avg_size = calculate_document_avg_size(elements)
+
+    heading_candidates = []
 
     for element in elements:
-        
-        if is_heading(element):
-            if first_heading:
 
-                document_title = element["text"]
-                first_heading = False
-                continue
+        score = get_heading_score(
+            element,
+            document_avg_size
+        )
 
-            if is_previous_header and current_section:
-                current_section["subheading"] = element["text"]
+        if score >= 4:
+            is_heading = True
+            heading_candidates.append(element)
+    
+    largest_heading_size = max(
+        sum(e["size"]) / len(e["size"])
+        for e in heading_candidates[1:]
+        )
+                    
+    for element in elements:
 
-                previous_was_heading = True
-                continue
 
-            # 如果已经有 section，先保存
-            if current_section:
-                sections.append(current_section)
+        score = get_heading_score(
+            element,
+            document_avg_size
+        )
 
 
-            # 创建新的 section
-            current_section = {
-                "heading": element["text"],
-                "subheading": None,
-                "page": element["page"],
-                "content": ""
-            }
+        is_heading = score >= 4
 
-            is_previous_header = True
+
+
+        print(
+            score,
+            element["text"]
+        )
+
+
+
+        if is_heading:
+
+
+            text = element["text"]
+
+
+            if document_title is None:
+
+                document_title = text
+                # continue
+
+
+
+            level = classify_heading_level(
+                element,
+                largest_heading_size
+            )
+            # print(
+            #     "LEVEL:",
+            #     level,
+            #     element["text"]
+            # )
+
+
+            if level == 1:
+
+
+                if current_section:
+
+                    sections.append(
+                        current_section
+                    )
+
+
+                current_section = {
+
+                    "heading": text,
+
+                    "page": element["page"],
+
+                    "content": "",
+
+                    "subsections": []
+
+                }
+
+
+                current_subsection = None
+
+
+
+            else:
+
+
+                if current_section is None:
+                    continue
+
+
+                current_subsection = {
+
+                    "subheading": text,
+
+                    "content": ""
+
+                }
+
+
+                current_section["subsections"].append(
+                    current_subsection
+                )
+
 
 
         else:
-            is_previous_header = False
 
-            if current_section:
+
+            if current_section is None:
+                continue
+
+
+            if current_subsection:
+
+
+                current_subsection["content"] += (
+                    element["text"] + " "
+                )
+
+
+            else:
+
                 current_section["content"] += (
                     element["text"] + " "
                 )
-        
 
 
-    # 最后一个 section
+
     if current_section:
-        sections.append(current_section)
+
+        sections.append(
+            current_section
+        )
 
 
     return sections, document_title
-
-def create_chunks(sections, document_title):
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=700,
-        chunk_overlap=200
-    )
-
-    chunks = []
-
-    for page in pages:
-
-        page_chunks = splitter.split_text(
-            page["text"]
-        )
-
-        for chunk in page_chunks:
-
-            chunks.append({
-                "page": page["page"],
-                "text": chunk
-            })
-
-    return chunks
