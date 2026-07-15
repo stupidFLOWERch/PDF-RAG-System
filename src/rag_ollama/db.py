@@ -176,6 +176,15 @@ class VectorDB:
             "persist_directory": self.persist_directory
         }
 
+    def clear(self):
+
+        self.client.delete_collection(
+            self.collection_name
+        )
+
+        self.collection = self.client.create_collection(
+            self.collection_name
+        )
 
 def process_and_store(pdf_path: str, db: VectorDB):
     """
@@ -231,3 +240,4 @@ def search_pdf(db: VectorDB, query: str, top_k: int = 5):
         print()
     
     return results
+

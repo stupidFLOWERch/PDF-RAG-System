@@ -1,6 +1,6 @@
 import re
 import tiktoken
-from pdf_loader import (
+from .pdf_loader import (
     get_heading_score,
     calculate_document_avg_size
 )
@@ -37,7 +37,7 @@ def flatten_sections(sections, document_title, max_tokens=512):
             documents.append({
                 "text": full_text,
                 "metadata": {
-                    "title": document_title,
+                    "title": document_title or "",
                     "heading": heading,
                     "page": page,
                     "chunk_type": "full"

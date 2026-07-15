@@ -1,7 +1,5 @@
-# rag.py
-
 import ollama
-from db import VectorDB
+from .db import VectorDB
 
 
 class RAG:

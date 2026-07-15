@@ -1,7 +1,6 @@
-# main.py
-from pdf_loader import extract_lines, merge_lines
-from chunker import create_sections, flatten_sections
-from db import VectorDB, process_and_store, search_pdf
+from .pdf_loader import extract_lines, merge_lines
+from .chunker import create_sections, flatten_sections
+from .db import VectorDB, process_and_store, search_pdf
 
 
 def main():

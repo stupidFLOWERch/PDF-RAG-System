@@ -298,16 +298,12 @@ def get_heading_score(element, next_element, document_avg_size):
         parts = re.split(r'\s*[-–—]\s*', text)
         if len(parts) >= 2:
             first_part = parts[0].strip()
-            # 如果第一部分是短描述（<= 3个词），且不是数字编号，也不是 Part/Chapter
-            # 注意：改成 <= 3，并且排除 Part/Chapter
+            # Ignore short list items (≤ 3 words),
+            # except numbered or section headings
             if len(first_part.split()) <= 3:
-                # 如果是 Part I, Chapter 1 等，保留
+                # Keep headings such as "Part I", "Chapter 1", "Section 2"
                 if not re.match(r'^(Part|Chapter|Section)\s+\w+', first_part, re.I):
                     return 0
-            # 如果第一部分是 "Part I: The Biological Substrate"（包含冒号），保留
-            if ':' in first_part:
-                # 标题特征，保留
-                pass
     
     # Ignore very long text
     if len(text) > 120:
@@ -344,12 +340,12 @@ def get_heading_score(element, next_element, document_avg_size):
     
     # Part / Chapter / Section headings
     if re.match(r'^(Part|Chapter|Section)\s+\w+', text, re.I):
-        score += 4  # 提高到 4
+        score += 4  
         if ':' in text:
             score += 1
         if ' - ' in text or ' – ' in text:
             score += 1
-        return score  # 直接返回，Part/Chapter 肯定是标题
+        return score  # Part/Chapter is title
     
     # Fully uppercase headings
     if text.isupper() and len(text) > 3:
@@ -362,7 +358,7 @@ def get_heading_score(element, next_element, document_avg_size):
             score += 2
             if ':' in text:
                 score += 1
-            # 如果以 "The", "A", "An" 开头，且短文本，加分
+            # Start with "The", "A", "An" 
             if re.match(r'^(The|A|An)\s+', text):
                 score += 1
     
