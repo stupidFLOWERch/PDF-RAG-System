@@ -3,33 +3,34 @@
 
 <head>
     <title>PDF RAG</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 
 <body>
 
+    <h1>📄 PDF RAG</h1>
 
-    <input type="file" id="pdfFile">
+    <!-- Upload PDF -->
+    <div class="card">
+        <div class="card-title">📤 Upload PDF</div>
+        <div class="upload-area">
+            <input type="file" id="pdfFile" accept=".pdf">
+            <button onclick="uploadPDF()">Upload</button>
+        </div>
+        <div id="uploadStatus">Please Upload a PDF file</div>
+    </div>
 
-    <button onclick="uploadPDF()">
-    Upload
-    </button>
-    
-    <div id="uploadStatus"></div>
-    
-    
-    <br>
-    
-    
-    <input id="question">
-    
-    <button onclick="ask()">
-    Send
-    </button>
-    
-    <div id="answer"></div>    
+    <!-- Question -->
+    <div class="card">
+        <div class="card-title">💬 Question</div>
+        <div class="chat-area">
+            <input id="question" placeholder="Enter your question...">
+            <button onclick="ask()">Send</button>
+        </div>
+        <div id="answer"></div>
+    </div>
 
-
-<script src="script.js"></script>
+    <script src="/static/script.js"></script>
 
 </body>
 

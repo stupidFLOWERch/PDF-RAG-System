@@ -1,4 +1,3 @@
-# db.py
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
@@ -8,34 +7,34 @@ from typing import List, Dict, Optional
 
 class VectorDB:
     """
-    向量数据库管理类 - 使用 ChromaDB
+    Vector database management using ChromaDB.
     """
     
     def __init__(self, collection_name: str = "documents", persist_directory: str = "./chroma_db"):
         """
-        初始化向量数据库
-        
+        Initialize vector database.
+
         Args:
-            collection_name: 集合名称
-            persist_directory: 持久化目录
+            collection_name: Name of the ChromaDB collection.
+            persist_directory: Directory path for database persistence.
         """
         self.collection_name = collection_name
         self.persist_directory = persist_directory
         
-        # 1. 初始化 embedding 模型
+        # 1. Initialize embedding model
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         print(f"✅ Loaded embedding model: all-MiniLM-L6-v2")
         
-        # 2. 初始化 ChromaDB
+        # 2. Initialize ChromaDB
         self.client = chromadb.PersistentClient(
             path=persist_directory,
             settings=Settings(anonymized_telemetry=False)
         )
         
-        # 3. 获取或创建 collection
+        # 3. Get existing collection or create a new one 
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
-            metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
+            metadata={"hnsw:space": "cosine"} 
         )
         
         print(f"✅ Connected to ChromaDB: {persist_directory}")
@@ -43,25 +42,29 @@ class VectorDB:
     
     def get_embedding(self, text: str) -> List[float]:
         """
-        生成文本的 embedding
-        
+        Generate embedding vector for input text.
+
         Args:
-            text: 文本内容
-            
+            text: Text content.
+
         Returns:
-            embedding 向量
+            A list containing embedding vector values.
         """
         return self.embedding_model.encode(text).tolist()
     
     def add_documents(self, documents: List[Dict]) -> int:
         """
-        批量添加文档到向量数据库
-        
+        Add multiple documents into vector database.
+
         Args:
-            documents: 文档列表，每个文档包含 text 和 metadata
-            
+            documents:
+                List of documents.
+                Each document contains:
+                - text
+                - metadata
+
         Returns:
-            添加的文档数量
+            Number of successfully added documents.
         """
         if not documents:
             print("⚠️ No documents to add")
@@ -73,24 +76,24 @@ class VectorDB:
         embeddings = []
         
         for i, doc in enumerate(documents):
-            # 生成唯一 ID
+            # Generate unique document ID
             doc_id = str(uuid.uuid4())
             ids.append(doc_id)
             
-            # 提取文本
+            # Extract document text
             text = doc.get("text", "")
             texts.append(text)
             
-            # 提取 metadata
+            # Extract metadata information
             metadata = doc.get("metadata", {})
             metadatas.append(metadata)
             
-            # 生成 embedding
+            # Generate embedding vector
             embedding = self.get_embedding(text)
             embeddings.append(embedding)
         
         try:
-            # 批量添加到 ChromaDB
+            # Insert documents into ChromaDB
             self.collection.add(
                 ids=ids,
                 documents=texts,
@@ -106,50 +109,112 @@ class VectorDB:
             print(f"❌ Error adding documents: {e}")
             return 0
     
-    def search(self, query: str, top_k: int = 5, filter_metadata: Optional[Dict] = None) -> List[Dict]:
+    def search(self, query: str, top_k: int = 10, filter_metadata: Optional[Dict] = None) -> List[Dict]:
         """
-        搜索相似的文档
-        
-        Args:
-            query: 查询文本
-            top_k: 返回结果数量
-            filter_metadata: 过滤条件，如 {"heading": "Introduction"}
-            
-        Returns:
-            搜索结果列表
+        Search for similar documents with keyword weighting.
         """
-        # 生成查询的 embedding
+        # 1. 向量搜索 (多取一些)
         query_embedding = self.get_embedding(query)
         
-        # 执行搜索
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=top_k * 2,
             where=filter_metadata
-        )
+        )   
         
-        # 格式化结果
+        # 2. 格式化和关键词加权
         formatted_results = []
         if results['documents']:
+            query_words = query.lower().split()
+            
             for i in range(len(results['documents'][0])):
+                text = results['documents'][0][i]
+                metadata = results['metadatas'][0][i]
+                distance = results['distances'][0][i] if results.get('distances') else 1.0
+                
+                # ✅ 关键词匹配加分
+                boost = 0
+                heading = metadata.get('heading', '').lower()
+                
+                for word in query_words:
+                    if word in heading:
+                        boost += 0.3
+                    if word in text.lower():
+                        boost += 0.1
+                
+                adjusted_distance = distance - boost
+                
                 formatted_results.append({
-                    "text": results['documents'][0][i],
-                    "metadata": results['metadatas'][0][i],
+                    "text": text,
+                    "metadata": metadata,
                     "id": results['ids'][0][i],
-                    "distance": results['distances'][0][i] if results.get('distances') else None
+                    "distance": distance,
+                    "adjusted_distance": adjusted_distance
                 })
+            
+            # ✅ 按调整后的距离排序
+            formatted_results.sort(key=lambda x: x['adjusted_distance'])
+            formatted_results = formatted_results[:top_k]
         
         return formatted_results
     
-    def search_by_text(self, query: str, top_k: int = 5) -> List[Dict]:
-        """
-        用文本搜索 (更友好的接口)
-        """
-        return self.search(query, top_k)
+    def search_by_text(self, query: str, top_k: int = 10) -> List[Dict]:
+        """Perform text-based keyword search with word-level matching."""
+        all_docs = self.get_all_documents()
+        
+        # ✅ 提取关键词（去掉停用词）
+        stopwords = {'what', 'is', 'the', 'are', 'a', 'an', 'of', 'to', 'for', 'in', 'on', 'at', 'with', 'without', 'by', 'from', 'up', 'down', 'off', 'over', 'under', 'about', 'part'}
+        query_words = set(query.lower().split())
+        keywords = [w for w in query_words if w not in stopwords and len(w) > 2]
+        
+        if not keywords:
+            return []
+        
+        matched = []
+        
+        for doc in all_docs:
+            text = doc['text'].lower()
+            heading = doc['metadata'].get('heading', '').lower()
+            
+            # ✅ 检查是否有任何关键词匹配
+            match_score = 0
+            for word in keywords:
+                if word in heading:
+                    match_score += 2  # heading 匹配权重更高
+                elif word in text:
+                    match_score += 1
+            
+            if match_score > 0:
+                matched.append({
+                    "text": doc['text'],
+                    "metadata": doc['metadata'],
+                    "id": doc['id'],
+                    "distance": 0.0,
+                    "match_score": match_score
+                })
+        
+        # ✅ 按匹配分数排序
+        matched.sort(key=lambda x: x['match_score'], reverse=True)
+        return matched[:top_k]
     
+    def search_hybrid(self, query: str, top_k: int = 10) -> List[Dict]:
+        """
+        Hybrid search: text first, then semantic.
+        """
+        # 1. 先做文本搜索 (关键词匹配)
+        text_results = self.search_by_text(query, top_k=top_k)
+        
+        if text_results:
+            print(f"✅ Text search found {len(text_results)} results")
+            return text_results
+        
+        # 2. 文本搜索没找到，用向量搜索
+        print(f"❌ Text search found nothing, falling back to semantic search")
+        return self.search(query, top_k)
+
     def get_all_documents(self) -> List[Dict]:
         """
-        获取所有文档
+        Retrieve all documents stored in collection.
         """
         results = self.collection.get()
         
@@ -164,12 +229,16 @@ class VectorDB:
         return documents
     
     def delete_collection(self):
-        """删除整个 collection"""
+        """
+        Delete the entire collection.
+        """
         self.client.delete_collection(self.collection_name)
         print(f"🗑️ Deleted collection: {self.collection_name}")
     
     def get_stats(self) -> Dict:
-        """获取数据库统计信息"""
+        """
+        Return database statistics.
+        """
         return {
             "collection_name": self.collection_name,
             "total_documents": self.collection.count(),
@@ -188,30 +257,33 @@ class VectorDB:
 
 def process_and_store(pdf_path: str, db: VectorDB):
     """
-    处理 PDF 并存储到向量数据库
-    
+    Process PDF file and store its content into vector database.
+
     Args:
-        pdf_path: PDF 文件路径
-        db: VectorDB 实例
+        pdf_path:
+            Path to PDF file.
+
+        db:
+            VectorDB instance.
     """
     from pdf_loader import extract_lines, merge_lines
     from chunker import create_sections, flatten_sections
     
     print(f"📄 Processing: {pdf_path}")
     
-    # 1. 提取 PDF
+    # 1. Extract text from PDF
     elements = extract_lines(pdf_path)
     elements = merge_lines(elements)
     
-    # 2. 创建 sections
+    # 2. Create sections
     sections, title = create_sections(elements)
     print(f"📊 Created {len(sections)} sections")
     
-    # 3. 展平为 chunks
+    # 3. Convert sections into chunks
     documents = flatten_sections(sections, title)
     print(f"📊 Created {len(documents)} chunks")
     
-    # 4. 存入向量数据库
+    # 4. Store chunks into vector database
     count = db.add_documents(documents)
     
     print(f"✅ Stored {count} documents in vector DB")
@@ -220,12 +292,17 @@ def process_and_store(pdf_path: str, db: VectorDB):
 
 def search_pdf(db: VectorDB, query: str, top_k: int = 5):
     """
-    搜索 PDF 内容
-    
+    Search PDF content.
+
     Args:
-        db: VectorDB 实例
-        query: 查询文本
-        top_k: 返回结果数量
+        db:
+            VectorDB instance.
+
+        query:
+            User query.
+
+        top_k:
+            Number of results to return.
     """
     results = db.search(query, top_k)
     

@@ -197,6 +197,35 @@ def calculate_document_avg_size(elements):
 
     return sum(sizes) / len(sizes)
 
+def calculate_document_avg_spacing(elements):
+
+    spacings = []
+
+    for i, element in enumerate(elements):
+
+        if i == 0:
+            continue
+
+        previous = elements[i-1]
+
+        if previous["page"] != element["page"]:
+            continue
+
+
+        spacing = abs(
+            element["bbox"][1] -
+            previous["bbox"][3]
+        )
+
+        if spacing > 0:
+            spacings.append(spacing)
+
+
+    if not spacings:
+        return 0
+
+    return sum(spacings) / len(spacings)
+    
 def get_bold_ratio(element):
     """
     calculate ratio of bold font 
@@ -217,7 +246,6 @@ def get_bold_ratio(element):
         return 0.0
     
     return bold_chars / total_chars
-
 
 def is_line_complete(element, next_element, document_avg_size):
     """
@@ -266,7 +294,12 @@ def is_line_complete(element, next_element, document_avg_size):
     # default: complete
     return True
 
-def get_heading_score(element, next_element, document_avg_size):
+def get_heading_score(
+    element,
+    previous_element,
+    next_element,
+    document_avg_size,
+):
     """
     Compute a heuristic score indicating how likely
     a text element is to be a heading.
@@ -275,8 +308,12 @@ def get_heading_score(element, next_element, document_avg_size):
     score = 0
     text = element["text"].strip()
     avg_size = sum(element["size"]) / len(element["size"])
-    
-    
+    bold_ratio = get_bold_ratio(element)
+    word_count = len(text.split())
+     # 1. ✅ 排除邮箱 (包含 @ 或 .com/.edu/.my 等域名)
+    if '@' in text or re.search(r'\.(com|edu|my|org|net|gov)\b', text, re.I):
+        return 0
+
     # Ignore URLs
     if re.search(r'https?://|www\.', text, re.I):
         return 0
@@ -327,15 +364,60 @@ def get_heading_score(element, next_element, document_avg_size):
     if '?' in text and len(text) > 30:
         return 0
     
+# ============================================================
+    # ✅ 扣分规则 (降低分数，但不直接排除)
+    # ============================================================
+    
+    # 1. ✅ 包含研究动词 → 扣分
+    research_verbs = r'\b(showed|demonstrated|found|revealed|indicated|suggests|highlights|emphasizes|illustrates|introduces|presents|proposes|provides|shows|discusses|explores|investigates|examines|describes|reports|identifies|argues|claims|states|notes|observes)\b'
+    if re.search(research_verbs, text, re.I):
+        score -= 3  # 扣 3 分
+
+    
+    # 2. ✅ 以 "This"、"The" 开头 → 扣分
+    if re.match(r'^(This|The|These|Those)\s+', text, re.I):
+        if re.search(r'\b(is|are|was|were|has|have|includes|contains|represents|provides|offers|presents)\b', text, re.I):
+            score -= 2
+
+    
+    # 3. ✅ 以连接词开头 → 扣分
+    if re.match(r'^(However|Therefore|Thus|Moreover|Furthermore|Additionally|Consequently|Nevertheless|Nonetheless|Meanwhile|Subsequently|Hence|Accordingly|In addition|In contrast|On the other hand)', text, re.I):
+        score -= 2
+
+    
+    # 4. ✅ 以句号结尾 → 扣分 (标题很少以句号结尾)
+    if text.endswith('.'):
+        score -= 1
+
+    
+    # 5. ✅ 字数 > 12 且没有冒号 → 扣分
+    if word_count > 18 and ':' not in text:
+        score -= 1
+
+    
+    # 6. ✅ Abstract 内容特征 ("This study", "The app") → 扣分
+    if re.match(r'^(This study|The app|The application|The paper|This paper|Our study)', text, re.I):
+        score -= 2
+    
+    # 8. ✅ 字体比平均小 → 扣分
+    if avg_size < document_avg_size * 0.9:
+        score -= 1
+
+    
+    # 9. ✅ 不是粗体 + 字数 > 8 → 扣分
+    if bold_ratio < 0.3 and word_count > 8:
+        score -= 1
+
     # -----------------------------
     # Heading scoring rules
     # -----------------------------
-    
+
     # Numbered headings
-    if re.match(r'^\d+\.\s+', text):
+    if re.match(r'^\d+(\.\d+)*\.?\s+', text):
         score += 4
         if '(' in text and ')' in text:
             score += 1
+        
         return score
     
     # Part / Chapter / Section headings
@@ -380,15 +462,10 @@ def get_heading_score(element, next_element, document_avg_size):
         if not text.endswith(".") and not text.endswith(":"):
             score += 1
     
-    # Left-aligned text
-    if "bbox" in element:
-        x0 = element["bbox"][0]
-        if x0 < 30:
-            score += 1
-    
     # Short text bonus
     word_count = len(text.split())
     if 2 <= word_count <= 12:
         score += 1
+    
     
     return score

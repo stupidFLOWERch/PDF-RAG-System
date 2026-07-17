@@ -1,51 +1,58 @@
-from .pdf_loader import extract_lines, merge_lines
-from .chunker import create_sections, flatten_sections
-from .db import VectorDB, process_and_store, search_pdf
+# main.py
+import sys
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
+from pdf_loader import extract_lines, merge_lines
+from chunker import create_sections, flatten_sections
+from db import VectorDB, process_and_store, search_pdf
 
 
 def main():
-    # ========== 配置 ==========
-    pdf_path = "../documents/iso27001.pdf"
-    db_path = "./chroma_db"
-    collection_name = "iso27001"
+    pdf_path = r"C:\Users\User\Desktop\pdf-rag-system\documents\PlantPals with author details revised.docx (2).pdf"
     
-    # ========== 初始化数据库 ==========
-    db = VectorDB(
-        collection_name=collection_name,
-        persist_directory=db_path
-    )
+    # 1. 处理并存储
+    db = VectorDB(collection_name="documents", persist_directory="./chroma_db")
     
-    # ========== 处理 PDF 并存到数据库 ==========
-    documents = process_and_store(pdf_path, db)
+    elements = extract_lines(pdf_path)
+    elements = merge_lines(elements)
+    sections, title = create_sections(elements)
+    documents = flatten_sections(sections, title)
     
-
-def load_and_search():
-    """
-    只搜索，不重新处理 PDF (如果已经存过)
-    """
-    db = VectorDB(collection_name="iso27001", persist_directory="./chroma_db")
+    # ✅ 打印所有存入的 heading
+    print("\n📊 All documents stored:")
+    for i, doc in enumerate(documents):
+        print(f"  {i+1}. Heading: {doc['metadata']['heading'][:50]}...")
     
-    print(f"📊 Database stats: {db.get_stats()}")
+    db.add_documents(documents)
     
-    while True:
-        query = input("\n🔍 Enter your question (or 'quit' to exit): ")
-        if query.lower() in ['quit', 'exit', 'q']:
-            break
-        
-        results = db.search(query, top_k=5)
-        
-        print(f"\n📊 Found {len(results)} results:\n")
-        for i, result in enumerate(results):
-            print(f"=== Result {i+1} (Score: {1 - result['distance']:.3f}) ===")
-            print(f"Heading: {result['metadata'].get('heading', 'N/A')}")
-            print(f"Page: {result['metadata'].get('page', 'N/A')}")
-            print(f"Text: {result['text'][:300]}...")
+    # 2. 向量搜索测试
+    print("\n" + "=" * 70)
+    print("🔍 VECTOR SEARCH for 'Abstract':")
+    print("=" * 70)
+    vector_results = db.search("Abstract", top_k=10)
+    
+    for i, r in enumerate(vector_results):
+        print(f"  {i+1}. Heading: {r['metadata'].get('heading')}")
+        print(f"     Text: {r['text'][:100]}...")
+        print()
+    
+    # 3. 文本搜索测试
+    print("\n" + "=" * 70)
+    print("🔍 TEXT SEARCH for 'Abstract':")
+    print("=" * 70)
+    text_results = db.search_by_text("Abstract", top_k=10)
+    
+    if text_results:
+        for i, r in enumerate(text_results):
+            print(f"  {i+1}. Heading: {r['metadata'].get('heading')}")
+            print(f"     Text: {r['text'][:100]}...")
             print()
+    else:
+        print("  ❌ No results found! 'Abstract' not in text or heading.")
 
 
 if __name__ == "__main__":
-    # 第一次运行: 处理并存储
     main()
-    
-    # 后续运行: 只搜索
-    # load_and_search()
