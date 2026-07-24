@@ -8,7 +8,7 @@ from .pdf_loader import (
 
 
 def get_token_count(text):
-    """Calculate the number of tokens in a text."""
+    """Calculate the number of tokens in the text."""
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
     return len(enc.encode(text))
 
@@ -25,17 +25,17 @@ def flatten_sections(sections, document_title, max_tokens=512):
         content = section.get("content", "").strip()
         page = section.get("page", 1)
         
-        # skip empty content heading
+        # Skip sections with empty content
         if not content:
             continue
         
         full_text = heading + "\n\n" + content
 
-        # get number of token
+        # Get the number of tokens
         token_count = get_token_count(full_text)
         
         if token_count <= max_tokens:
-            # no need split 
+            # No need to split the section
             documents.append({
                 "text": full_text,
                 "metadata": {
@@ -46,7 +46,7 @@ def flatten_sections(sections, document_title, max_tokens=512):
                 }
             })
         else:
-            # split if token_count > max_tokens
+            # Split the section if the token count exceeds the limit
             chunks = split_text_by_heading(full_text, heading, max_tokens)
             
             for i, chunk_text in enumerate(chunks):
@@ -72,14 +72,14 @@ def split_text_by_heading(full_text, heading, max_tokens=512):
     Split text based on sentences while keeping the heading
     in every generated chunk.
     """
-    # 提取内容（移除开头的标题）
+    # Extract the content by removing the heading
     content = full_text.replace(heading, "", 1).strip()
     
-    # content within limit, no split
+    # Return the original text if the content is within the token limit
     if get_token_count(content) <= max_tokens:
         return [full_text]
     
-    # Split text into sentences
+    # Split the content into sentences
     sentences = re.split(r'(?<=[.!?])\s+', content)
     
     chunks = []
@@ -120,28 +120,34 @@ def find_title_from_candidates(heading_candidates):
         if word_count < 3 or word_count > 20:
             continue
         
-        # ✅ 排除包含 "Email:", "Contact:" 的标题
+        # Exclude headings containing email or contact information
         if re.search(r'^(Email|Contact|Correspondence)', text, re.I):
             continue
 
-        # ✅ 排除作者名格式 (包含 "and" 或两个大写字母开头)
+        # Exclude author name formats
+        # Example: "John Smith and Jane Doe" or "Smith, John"
         if re.match(r'^[A-Z][a-z]+\s+and\s+[A-Z][a-z]+', text):
             continue
         if re.match(r'^[A-Z][a-z]+,\s+[A-Z][a-z]+', text):
             continue
-                
+        
+        # Exclude numbered headings
         if re.match(r'^\d+\.\s+', text):
             continue
         
+        # Exclude Part, Chapter, and Section headings
         if re.match(r'^(Part|Chapter|Section)\s+\w+', text, re.I):
             continue
         
+        # Exclude common introductory and concluding headings
         if re.match(r'^(Introduction|Conclusion)($|:)', text, re.I):
             continue
         
+        # Require at least one uppercase letter
         if not re.search(r'[A-Z]', text):
             continue
         
+        # Exclude sentences ending with a period
         if text.endswith('.'):
             continue
         
@@ -157,10 +163,11 @@ def is_toc_page(elements, page_num):
     page_elements = [e for e in elements if e["page"] == page_num]
     text = " ".join([e["text"] for e in page_elements])
     
-     # ✅ 统计数字编号标题的数量
+    # Count numbered headings
     numbered_headings = re.findall(r'\b\d+\.\d+\s+[A-Z]', text)
     
-    # ✅ 如果少于 2 个，不是 TOC（正文页面通常只有 1-2 个标题）
+    # If fewer than two numbered headings are found, it is unlikely to be a TOC page
+    # Normal content pages usually contain only one or two numbered headings
     if len(numbered_headings) < 2:
         return False
 
@@ -175,6 +182,7 @@ def is_toc_page(elements, page_num):
     for pattern in toc_patterns:
         if re.search(pattern, text, re.I):
             return True
+    
     return False
 
 
@@ -184,16 +192,19 @@ def is_toc_line(text):
     """
     text = text.strip()
     
-    # ✅ 如果是数字编号标题 (5.2, 5.1.1 等)，不要过滤
+    # Do not filter numbered headings such as 5.2 or 5.1.1
     if re.match(r'^\d+(\.\d+)*\.?\s+', text):
         return False
 
+    # Detect dotted leaders followed by a page number
     if re.search(r'\.{5,}\s*\d+', text):
         return True
     
+    # Detect lines ending with a number
     if re.search(r'\d+$', text) and len(text.split()) > 3:
         return True
     
+    # Detect Part headings with dotted leaders and page numbers
     if re.search(r'Part\s+\w+\s+\.{5,}\s*\d+', text, re.I):
         return True
     
@@ -215,13 +226,19 @@ def format_table_as_markdown(table_lines):
         return ""
     
     data_rows = []
+    
     for line in table_lines:
         line = line.strip()
+        
         if not line:
             continue
+        
+        # Skip table captions
         if is_table_heading(line):
             continue
+        
         parts = line.split()
+        
         if parts:
             data_rows.append(parts)
     
@@ -229,12 +246,15 @@ def format_table_as_markdown(table_lines):
         return "\n".join(table_lines)
     
     header = data_rows[0]
+    
     markdown = "| " + " | ".join(header) + " |\n"
     markdown += "|" + " --- |" * len(header) + "\n"
     
     for row in data_rows[1:]:
+        # Pad rows with empty values if they have fewer columns than the header
         while len(row) < len(header):
             row.append("")
+        
         markdown += "| " + " | ".join(row[:len(header)]) + " |\n"
     
     return markdown
@@ -263,10 +283,13 @@ def extract_table_content(elements):
         return None
     
     result = ""
+    
+    # Add the table title if available
     if table_title:
         result += f"**{table_title}**\n\n"
     
     markdown_table = format_table_as_markdown(table_data)
+    
     if markdown_table:
         result += markdown_table
     else:
@@ -277,7 +300,7 @@ def extract_table_content(elements):
 
 def create_sections(elements):
     """
-    创建 sections，处理被拆分的标题
+    Create sections and handle headings that are split across multiple elements.
     """
     document_title = None
     document_avg_size = calculate_document_avg_size(elements)
@@ -291,17 +314,21 @@ def create_sections(elements):
             toc_pages.add(element["page"])
     
     for element in elements:
+        # Skip elements from detected TOC pages
         if element["page"] in toc_pages:
             continue
+        
+        # Skip individual TOC lines
         if is_toc_line(element["text"]):
             continue
+        
         filtered_elements.append(element)
     
     if toc_pages:
         print(f"📋 Skipped TOC pages: {toc_pages}")
     
     # ============================================================
-    # ✅ DEBUG: 显示所有元素的 heading score
+    # DEBUG: Display heading scores for all elements
     # ============================================================
     print("\n" + "=" * 70)
     print("🔍 HEADING SCORE DEBUG:")
@@ -309,9 +336,10 @@ def create_sections(elements):
     
     heading_scores = []
 
-    for i, element in enumerate(filtered_elements):  
+    for i, element in enumerate(filtered_elements):
         
         text_preview = element["text"][:50].replace('\n', ' ')
+        
         previous_element = (
             filtered_elements[i - 1]
             if i > 0
@@ -334,14 +362,27 @@ def create_sections(elements):
         heading_scores.append(score)
 
         is_heading = "✅" if score >= 4 else "  "
-        avg_size = sum(element["size"]) / len(element["size"]) if element["size"] else 0
+        
+        avg_size = (
+            sum(element["size"]) / len(element["size"])
+            if element["size"]
+            else 0
+        )
+        
         bold_ratio = get_bold_ratio(element)
+        
         if i < 100:
-            print(f"  {i+1:3d}. {is_heading} Score: {score:2d} | Size: {avg_size:4.1f} | Bold: {bold_ratio:.0%} | {text_preview}...")
+            print(
+                f"  {i+1:3d}. {is_heading} | "
+                f"Score: {score:2d} | "
+                f"Size: {avg_size:4.1f} | "
+                f"Bold: {bold_ratio:.0%} | "
+                f"{text_preview}..."
+            )
     
     print("=" * 70 + "\n")
     
-    # ========== Step 2: 合并被拆分的标题 ==========
+    # ========== Step 2: Merge split headings ==========
     merged_elements = []
     i = 0
     merged_titles = []
@@ -353,16 +394,35 @@ def create_sections(elements):
         
         if is_current_heading and i + 1 < len(filtered_elements):
             next_elem = filtered_elements[i + 1]
-            next_score = get_heading_score(next_elem, current, None, document_avg_size)
+            
+            next_score = get_heading_score(
+                next_elem,
+                current,
+                None,
+                document_avg_size
+            )
+            
             is_next_heading = next_score >= 4
             
             if is_next_heading and current["page"] == next_elem["page"]:
-                y_diff = abs(current["bbox"][1] - next_elem["bbox"][1])
+                y_diff = abs(
+                    current["bbox"][1] - next_elem["bbox"][1]
+                )
+                
                 if y_diff < 30:
-                    # ✅ 合并标题
-                    current["text"] = current["text"].strip() + " " + next_elem["text"].strip()
-                    print(f"🔗 Merged split title: '{current['text'][:60]}...'")
-                    merged_titles.append(current["text"])  # ✅ 记录合并后的标题文本
+                    # Merge split headings
+                    current["text"] = (
+                        current["text"].strip()
+                        + " "
+                        + next_elem["text"].strip()
+                    )
+                    
+                    print(
+                        f"🔗 Merged split title: "
+                        f"'{current['text'][:60]}...'"
+                    )
+                    
+                    merged_titles.append(current["text"])
                     i += 1
         
         merged_elements.append(current)
@@ -370,12 +430,29 @@ def create_sections(elements):
 
     filtered_elements = merged_elements
 
-    # ✅ 重新计算 heading_scores
+    # Recalculate heading scores after merging elements
     heading_scores = []
+    
     for i, element in enumerate(filtered_elements):
-        previous_element = filtered_elements[i-1] if i > 0 else None
-        next_element = filtered_elements[i+1] if i < len(filtered_elements)-1 else None
-        score = get_heading_score(element, previous_element, next_element, document_avg_size)
+        previous_element = (
+            filtered_elements[i - 1]
+            if i > 0
+            else None
+        )
+        
+        next_element = (
+            filtered_elements[i + 1]
+            if i < len(filtered_elements) - 1
+            else None
+        )
+        
+        score = get_heading_score(
+            element,
+            previous_element,
+            next_element,
+            document_avg_size
+        )
+        
         heading_scores.append(score)
 
     # ========== Step 3: Detect heading candidates ==========
@@ -387,15 +464,18 @@ def create_sections(elements):
         
         score = heading_scores[i]
         
-        # ✅ 如果是合并后的标题，强制加入
+        # Force merged headings to be added as heading candidates
         if element["text"] in merged_titles:
-            print(f"✅ Force adding merged title: '{element['text'][:60]}...'")
+            print(
+                f"✅ Force adding merged title: "
+                f"'{element['text'][:60]}...'"
+            )
             heading_candidates.append(element)
+        
         elif score >= 4:
             heading_candidates.append(element)
     
     # ========== Step 4: Find document title ==========
-    
     document_title = find_title_from_candidates(heading_candidates)
     print(f"📌 Document Title: {document_title}")
     
@@ -404,11 +484,14 @@ def create_sections(elements):
     current_section = None
     
     for i, element in enumerate(filtered_elements):
+        
         if element.get("is_table", False):
             if current_section:
                 table_text = extract_table_content([element])
+                
                 if table_text:
                     current_section["content"] += table_text + "\n\n"
+            
             continue
         
         score = heading_scores[i]
@@ -425,7 +508,12 @@ def create_sections(elements):
                 "page": element["page"],
                 "content": ""
             }
-            print(f"📂 Created section: {text[:50]}... (score: {score})")
+            
+            print(
+                f"📂 Created section: "
+                f"{text[:50]}... "
+                f"(score: {score})"
+            )
         
         else:
             if current_section:
@@ -434,11 +522,11 @@ def create_sections(elements):
     if current_section:
         temp_sections.append(current_section)
     
-    # ========== Step 6: 合并空 sections ==========
+    # ========== Step 6: Merge empty sections ==========
     sections = merge_empty_sections(temp_sections)
     
     # ============================================================
-    # ✅ 显示最终 sections 预览
+    # Display final section preview
     # ============================================================
     print("\n" + "=" * 70)
     print("📊 FINAL SECTIONS:")
@@ -447,10 +535,26 @@ def create_sections(elements):
     for i, sec in enumerate(sections):
         heading = sec["heading"][:50]
         content = sec.get("content", "").strip()
-        content_preview = content[:80].replace('\n', ' ') if content else "(EMPTY)"
+        
+        content_preview = (
+            content[:80].replace('\n', ' ')
+            if content
+            else "(EMPTY)"
+        )
+        
         word_count = len(content.split()) if content else 0
-        print(f"  {i+1:3d}. [{word_count:4d} words] {heading}...")
-        print(f"         Content: {content_preview}...")
+        
+        print(
+            f"  {i+1:3d}. "
+            f"[{word_count:4d} words] "
+            f"{heading}..."
+        )
+        
+        print(
+            f"         Content: "
+            f"{content_preview}..."
+        )
+        
         print("-" * 50)
     
     print("=" * 70)
@@ -459,10 +563,12 @@ def create_sections(elements):
     
     return sections, document_title
 
+
 def merge_empty_sections(sections):
     """
-    如果 section 是空的（没有 content），把它的标题合并到下一个 section
-    这样被拆分的标题（如 "The Impact..." 和 "Reflection..."）会被合并
+    Merge empty sections with the next section that contains content.
+    This helps combine headings that were incorrectly split,
+    such as "The Impact..." and "Reflection...".
     """
     if len(sections) < 2:
         return sections
@@ -474,46 +580,63 @@ def merge_empty_sections(sections):
         current = sections[i]
         content = current.get("content", "").strip()
         
-        # ✅ 如果当前 section 有内容，直接保留
+        # Keep sections that already contain content
         if content:
             merged.append(current)
             i += 1
             continue
         
-        # ✅ 当前 section 是空的（只有标题）
+        # The current section contains only a heading
         empty_heading = current["heading"]
         current_page = current.get("page", 1)
         
-        print(f"🔍 Found empty section: '{empty_heading[:40]}...'")
+        print(
+            f"🔍 Found empty section: "
+            f"'{empty_heading[:40]}...'"
+        )
         
-        # ✅ 找下一个有内容的 section
+        # Find the next section that contains content
         found = False
+        
         for j in range(i + 1, len(sections)):
             next_section = sections[j]
             next_content = next_section.get("content", "").strip()
             next_page = next_section.get("page", 1)
             
-            # 如果有内容，把空标题合并到下一个 section
+            # If the next section contains content
             if next_content:
-                # ✅ 检查是否在同一页或下一页（标题被拆分通常在同一页）
-                if next_page == current_page or next_page == current_page + 1:
-                    # 合并标题
-                    next_section["heading"] = empty_heading + " " + next_section["heading"]
-                    # print(f"🔗 Merged empty heading: '{empty_heading[:30]}...' + '{next_section['heading'][:30]}...'")
+                
+                # Check whether the sections are on the same page
+                # or on consecutive pages
+                if (
+                    next_page == current_page
+                    or next_page == current_page + 1
+                ):
+                    # Merge the headings
+                    next_section["heading"] = (
+                        empty_heading
+                        + " "
+                        + next_section["heading"]
+                    )
                     
-                    # ✅ 把合并后的 section 加入结果
+                    # Add the merged section to the result
                     merged.append(next_section)
+                    
                     found = True
-                    i = j + 1  # ✅ 跳过被合并的 section
+                    
+                    # Skip all sections that have been merged
+                    i = j + 1
                     break
+                
                 else:
-                    # 空标题和下一个内容在不同页 → 保留空标题
+                    # Keep the empty heading if the next section
+                    # is located on a different page
                     merged.append(current)
                     found = True
                     i += 1
                     break
         
-        # 如果没找到下一个有内容的 section，保留空标题
+        # Keep the heading if no suitable section was found
         if not found:
             merged.append(current)
             i += 1

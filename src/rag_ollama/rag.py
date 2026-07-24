@@ -27,7 +27,7 @@ class RAG:
     def ask(
         self,
         query: str,
-        top_k: int = 5
+        top_k: int = 10
     ) -> str:
         """
         Answer a user query using retrieved documents.
@@ -52,15 +52,6 @@ class RAG:
         if not results:
             return "No relevant documents found."
 
-        # ✅ 去重
-        seen_texts = set()
-        unique_results = []
-        for r in results:
-            if r['text'] not in seen_texts:
-                seen_texts.add(r['text'])
-                unique_results.append(r)
-        
-        results = unique_results[:top_k]
         # ==========================================
         # Step 2. Build context for the LLM
         # ==========================================
@@ -72,7 +63,9 @@ class RAG:
             context += (
                 f"[{i + 1}] {result['text']}\n\n"
             )
-
+        # print("\n========== RETRIEVED CONTEXT ==========")
+        # print(context)
+        # print("========================================\n")
         # ==========================================
         # Step 3. Construct the prompt
         # ==========================================
