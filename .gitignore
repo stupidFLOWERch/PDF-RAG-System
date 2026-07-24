@@ -4,3 +4,4 @@ documents/
 chroma_db/
 *.pyc
 uploads/
+.venv
