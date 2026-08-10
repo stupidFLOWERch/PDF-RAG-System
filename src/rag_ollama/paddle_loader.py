@@ -79,7 +79,7 @@ class PaddleDocLoader:
             self._init_structure_parser()
     
     def _init_vl_parser(self):
-        """Initialize PaddleOCR-VL-1.6 parser."""
+        """Initialize PaddleOCR-VL-1.6 parser. Falls back to PP-StructureV3 on failure."""
         try:
             from paddleocr import PaddleOCRVL
             
@@ -98,18 +98,25 @@ class PaddleDocLoader:
                     print("   ✅ PaddleOCR-VL initialized successfully")
                     return
                 except Exception as e:
+                    print(f"   ⚠️ VL init attempt failed: {e}")
                     continue
             
-            raise RuntimeError("All VL initialization attempts failed")
+            # 所有 VL 尝试都失败 → 回退到 PP-StructureV3
+            print("   ⚠️ All VL initialization attempts failed")
+            print("   🔄 Falling back to PP-StructureV3...")
+            self.use_vl = False
+            self._init_structure_parser()
             
         except ImportError as e:
             print(f"   ⚠️ PaddleOCRVL not available: {e}")
-            print("   Falling back to PP-StructureV3...")
+            print("   🔄 Falling back to PP-StructureV3...")
             self.use_vl = False
             self._init_structure_parser()
         except Exception as e:
             print(f"   ❌ VL initialization failed: {e}")
-            raise
+            print("   🔄 Falling back to PP-StructureV3...")
+            self.use_vl = False
+            self._init_structure_parser()
     
     def _init_structure_parser(self):
         """Initialize PP-StructureV3 parser."""

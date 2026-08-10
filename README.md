@@ -3,25 +3,41 @@
 A RAG chatbot that answers questions based on the content of uploaded PDF documents.
 
 ## Prerequisites
+
 - Python 3.12+
 - Ollama
 - Llama 3 (llama3:latest)
+
+## Features
+
+- 🔍 **Smart PDF Detection** – Automatically detects if a PDF is text-based or scanned
+- ⚡ **Fast Processing** – Uses PyMuPDF for text-based PDFs (fast)
+- 🧠 **OCR Support** – Uses PaddleOCR-VL-1.6 / PP-StructureV3 for scanned PDFs
+- 📊 **Hybrid Search** – Combines text search + semantic search for better retrieval
+- 🎯 **Reranking** – Uses BGE Reranker for improved result quality
+- 💬 **Local LLM** – Runs Llama 3 via Ollama for offline answer generation
+
 ## Tech Stack
-- Python – Backend and document processing
-- FastAPI – Backend API
-- PyMuPDF (fitz) – PDF text extraction
-- ChromaDB – Vector database
-- Sentence Transformers – Text embeddings
-- BGE Reranker – Document reranking
-- Ollama – Local LLM inference
-- Llama 3 – Answer generation
-- Uvicorn – ASGI server
+
+| Component | Technology |
+|-----------|------------|
+| Backend Framework | FastAPI |
+| PDF Extraction (Text-based) | PyMuPDF (fitz) |
+| PDF Extraction (Scanned) | PaddleOCR-VL-1.6 / PP-StructureV3 |
+| Vector Database | ChromaDB |
+| Embeddings | Sentence Transformers (all-MiniLM-L6-v2) |
+| Reranker | BGE Reranker (BAAI/bge-reranker-v2-m3) |
+| LLM | Ollama + Llama 3 |
+| ASGI Server | Uvicorn |
+
 ## RAG Pipeline
 
 ```text
 Upload PDF
     ↓
-Extract PDF Content
+Detect PDF type (Text-based vs Scanned)
+    ↓
+Extract PDF Content (PyMuPDF / PaddleOCR)
     ↓
 Detect Headings & Create Sections
     ↓
@@ -33,8 +49,7 @@ Store Chunks + Embeddings in ChromaDB
     ↓
 User Asks a Question
     ↓
-Hybrid Search
-(Text Search + Semantic Search)
+Hybrid Search (Text Search + Semantic Search)
     ↓
 Combine & Remove Duplicates
     ↓
@@ -46,6 +61,7 @@ Send Context + Question to LLM
     ↓
 Generate Answer
 ```
+
 ## How to Run
 
 ### 1. Clone this repository
