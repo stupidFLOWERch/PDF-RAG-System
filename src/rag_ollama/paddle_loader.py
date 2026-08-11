@@ -197,6 +197,15 @@ class PaddleDocLoader:
                     
                     if md_text and len(md_text) > 10:
                         print(f"   ✅ Page {idx + 1} markdown: {len(md_text)} chars")
+                        
+                        # ============================================================
+                        # print Raw Markdown
+                        # ============================================================
+                        print(f"   📝 RAW MARKDOWN (page {idx + 1}):")
+                        print("-" * 80)
+                        print(md_text[:1000])
+                        print("-" * 80)
+                        
                         page_elements = self._parse_markdown(md_text, page_num=idx + 1)
                         all_elements.extend(page_elements)
                         print(f"   ✅ Extracted {len(page_elements)} elements from page {idx + 1}")
@@ -270,39 +279,73 @@ class PaddleDocLoader:
         return elements
     
     def _parse_markdown(self, md_text: str, page_num: int = 1) -> List[Dict]:
-        """
-        Parse Markdown text into structured elements.
-        
-        Args:
-            md_text: Markdown formatted text
-            page_num: Page number for all extracted elements
-            
-        Returns:
-            List of parsed elements (heading/text)
-        """
+        """Parse Markdown text into structured elements."""
         if not md_text:
             return []
         
         md_text = md_text.replace('\\n', '\n').replace('\\"', '"').replace('\\t', ' ')
         
-        elements = []
+        # ============================================================
+        # Step 1: Remove all HTML tags, preserve text content
+        # ============================================================
+        # Remove <div> and </div>
+        md_text = re.sub(r'<div[^>]*>', '', md_text)
+        md_text = re.sub(r'</div>', '', md_text)
+        
+        # Remove <p> and </p>
+        md_text = re.sub(r'<p[^>]*>', '', md_text)
+        md_text = re.sub(r'</p>', '', md_text)
+        
+        # Remove <span> and </span>
+        md_text = re.sub(r'<span[^>]*>', '', md_text)
+        md_text = re.sub(r'</span>', '', md_text)
+        
+        # Remove <table> and </table> (keep content)
+        md_text = re.sub(r'<table[^>]*>', '', md_text)
+        md_text = re.sub(r'</table>', '', md_text)
+        
+        # Remove table row/cell tags (keep content)
+        md_text = re.sub(r'<tr[^>]*>', '', md_text)
+        md_text = re.sub(r'</tr>', '', md_text)
+        md_text = re.sub(r'<td[^>]*>', '', md_text)
+        md_text = re.sub(r'</td>', '', md_text)
+        md_text = re.sub(r'<th[^>]*>', '', md_text)
+        md_text = re.sub(r'</th>', '', md_text)
+        
+        # Replace <br> with newline
+        md_text = re.sub(r'<br\s*/?>', '\n', md_text)
+        
+        # Remove style tags (bold, italic, underline, etc.)
+        md_text = re.sub(r'<[/]?(strong|b|i|em|u|small|big|font)[^>]*>', '', md_text)
+        
+        # Remove style attributes
+        md_text = re.sub(r'style="[^"]*"', '', md_text)
+        
+        # Remove extra blank lines
+        md_text = re.sub(r'\n{3,}', '\n\n', md_text)
+        
+        # ============================================================
+        # Step 2: Split into lines and parse
+        # ============================================================
         lines = md_text.split('\n')
         
+        elements = []
         current_heading = None
         current_content = []
+        
+        heading_keywords = ['SALARY', 'INVOICE', 'REPORT', 'STATEMENT', 'SUMMARY', 
+                        'TOTAL', 'EARNINGS', 'DEDUCTION', 'PAYSLIP', 'MONTH',
+                        'MEMO', 'BILL', 'RECEIPT', 'PAYMENT', 'BALANCE',
+                        'COMPANY', 'EMPLOYEE', 'PAYROLL']
         
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # Skip HTML tables
-            if line.startswith('<table') or line.startswith('</table>') or 'td' in line:
-                continue
-            
-            # Detect headings (# ## ###)
+            # Detect Markdown headings (#, ##, ###)
             if line.startswith('#'):
-                # Save previous heading's content
+                 # Save previous heading's content
                 if current_heading is not None and current_content:
                     elements.append({
                         'page': page_num,
@@ -325,11 +368,53 @@ class PaddleDocLoader:
                     })
                 continue
             
-            # Regular text - belongs to current heading
+            # Detect plain text headings
+            is_likely_heading = False
+            
+            # Condition 1: ALL CAPS and short (e.g., "INVOICE", "MEMO")
+            if len(line) < 60 and line.isupper():
+                is_likely_heading = True
+            
+            # Condition 2: Contains heading keywords (e.g., "SALARY", "EARNINGS")
+            if any(keyword in line.upper() for keyword in heading_keywords):
+                if len(line) < 80:
+                    is_likely_heading = True
+            
+            # Condition 3: Ends with colon and is short (e.g., "Employee:", "Total:")
+            if line.endswith(':') and 10 < len(line) < 60:
+                is_likely_heading = True
+
+            # Condition 4: Pattern like "Label: Value" (e.g., "Employee ID: 12345")
+            if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)*\s*[:]\s*\w+', line):
+                is_likely_heading = True
+            
+            if is_likely_heading and current_heading is None:
+                # Save previous content if exists
+                if current_heading is not None and current_content:
+                    elements.append({
+                        'page': page_num,
+                        'type': 'text',
+                        'text': clean_text(' '.join(current_content)),
+                        'bbox': [],
+                        'confidence': 1.0
+                    })
+                    current_content = []
+                
+                current_heading = line
+                elements.append({
+                    'page': page_num,
+                    'type': 'heading',
+                    'text': clean_text(line),
+                    'bbox': [],
+                    'confidence': 1.0
+                })
+                continue
+            
+            # normal text
             if current_heading is not None:
                 current_content.append(line)
             else:
-                # No heading, treat as standalone text
+                # No heading yet, treat as standalone text
                 elements.append({
                     'page': page_num,
                     'type': 'text',
@@ -338,7 +423,7 @@ class PaddleDocLoader:
                     'confidence': 1.0
                 })
         
-        # Handle remaining content
+        # Handle remaining content after the last heading
         if current_heading is not None and current_content:
             elements.append({
                 'page': page_num,
@@ -372,33 +457,27 @@ class PaddleDocLoader:
         
         for elem in elements:
             if elem['type'] == 'heading':
-                # Save previous section
                 if current_section:
                     sections.append(current_section)
                 
-                # First heading becomes document title
                 if document_title is None:
                     document_title = elem['text']
                 
-                # Start new section
                 current_section = {
                     'heading': elem['text'],
                     'page': elem.get('page', 1),
                     'content': ''
                 }
             else:
-                # Add text to current section
                 if current_section:
                     current_section['content'] += elem['text'] + ' '
                 else:
-                    # No heading yet, create default section
                     current_section = {
                         'heading': 'Document Start',
                         'page': elem.get('page', 1),
                         'content': elem['text'] + ' '
                     }
         
-        # Save the last section
         if current_section:
             sections.append(current_section)
         
