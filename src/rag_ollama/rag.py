@@ -1,5 +1,5 @@
-import ollama
 from .db import VectorDB
+from .llm import LLMClient
 
 
 class RAG:
@@ -12,17 +12,15 @@ class RAG:
     def __init__(
         self,
         db: VectorDB,
-        model: str = "llama3:latest"
     ):
         """
         Initialize the RAG system.
 
         Args:
             db: Vector database instance.
-            model: Ollama model name.
         """
         self.db = db
-        self.model = model
+        self.llm = LLMClient()
 
     def ask(
         self,
@@ -59,22 +57,15 @@ class RAG:
         context = ""
 
         for i, result in enumerate(results):
-
             context += (
                 f"[{i + 1}] {result['text']}\n\n"
             )
-        # print("\n========== RETRIEVED CONTEXT ==========")
-        # print(context)
-        # print("========================================\n")
+
         # ==========================================
         # Step 3. Construct the prompt
         # ==========================================
 
         prompt = f"""
-You are a helpful information assistant.
-
-Answer the user's question using ONLY the information provided in the context.
-
 Context:
 {context}
 
@@ -85,42 +76,30 @@ Answer:
 """
 
         # ==========================================
-        # Step 4. Generate answer using Ollama
+        # Step 4. Generate answer using LLM
         # ==========================================
 
-        response = ollama.chat(
-
-            model=self.model,
-
+        answer = self.llm.generate(
             messages=[
-
                 {
                     "role": "system",
-                    "content":
-                    (
+                    "content": (
                         "Answer only based on the provided context. "
                         "If the answer cannot be found in the context, "
                         "reply: 'I cannot find this information in the document.'"
                     )
                 },
-
                 {
                     "role": "user",
                     "content": prompt
                 }
-
             ],
-
             options={
                 "temperature": 0.1
             }
-
         )
 
-        return (
-            response["message"]["content"]
-            .strip()
-        )
+        return answer.strip()
 
 
 def rag_chat():

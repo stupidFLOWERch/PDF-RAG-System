@@ -1,6 +1,5 @@
 __pycache__/
 .env
-documents/
 chroma_db/
 *.pyc
 uploads/
