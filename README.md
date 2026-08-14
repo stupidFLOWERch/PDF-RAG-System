@@ -5,8 +5,8 @@ A RAG chatbot that answers questions based on the content of uploaded PDF docume
 ## Prerequisites
 
 - Python 3.12+
-- Ollama
-- Llama 3 (llama3:latest)
+- Ollama (with llama3:latest)
+- Docker (optional)
 
 ## Features
 
@@ -98,6 +98,26 @@ uvicorn src.backend.app:app --reload
 ```
 
 ### 5. Open the chatbot interface
+
+Open the following URL in your browser:
+
+http://localhost:8000/
+
+## Run with Docker
+
+### 1. Clone this repository
+
+```bash
+git clone https://github.com/stupidFLOWERch/PDF-RAG-System.git
+cd PDF-RAG-System
+```
+
+### 2. Build and run with Docker Compose
+```bash
+docker compose up --build
+```
+
+### 3. Open the chatbot interface
 
 Open the following URL in your browser:
 
