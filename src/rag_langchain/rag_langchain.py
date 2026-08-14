@@ -1,22 +1,21 @@
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.embeddings import HuggingFaceEmbeddings 
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_classic.chains import RetrievalQA
-from langchain_classic.prompts import PromptTemplate 
-from langchain_community.llms import Ollama 
+from langchain_ollama import ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document  # ✅ 添加导入
-
-from token_splitter import TokenTextSplitter
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate  # ✅ 1.0 standard
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser  # ✅ Output parser
 
 import os
 import shutil
 
 # ==========================================
-# ✅ 打印 chunk 预览
+# ✅ Print chunk preview
 # ==========================================
 def preview_chunks(chunks, max_show=5):
-    """打印前几个 chunk 的预览信息"""
+    """Print preview information for the first few chunks"""
     print(f"\n{'='*60}")
     print(f"📄 Chunk Preview (showing {min(max_show, len(chunks))} of {len(chunks)}):")
     print(f"{'='*60}")
@@ -29,6 +28,7 @@ def preview_chunks(chunks, max_show=5):
         print(f"  Metadata: {chunk.metadata}")
     print(f"{'='*60}\n")
 
+
 class RAGLangChain:
     def __init__(
         self,
@@ -38,16 +38,20 @@ class RAGLangChain:
         chunk_size: int = 700,
         chunk_overlap: int = 120
     ):
+        # ==========================================
+        # 1. Load PDF
+        # ==========================================
         if pdf_path:
             if os.path.exists(persist_directory):
                 print(f"🗑️ Deleting existing database: {persist_directory}")
                 shutil.rmtree(persist_directory)
+            
             loader = PyPDFLoader(pdf_path)
             documents = loader.load()
             print(f"📄 Loaded {len(documents)} pages from PDF")
 
             # ==========================================
-            # 第一步：用 RecursiveCharacterTextSplitter 按标点切分
+            # 2. Text splitting
             # ==========================================
             recursive_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1500,
@@ -58,12 +62,12 @@ class RAGLangChain:
             recursive_chunks = recursive_splitter.split_documents(documents)
             print(f"📊 Recursive split into {len(recursive_chunks)} chunks")
 
-            # ==========================================
-            # 第二步：用 TokenTextSplitter 精确控制 Token 数
-            # ==========================================
-            token_splitter = TokenTextSplitter(
+            # Token-level splitting (CharacterTextSplitter as fallback since TokenTextSplitter is removed in newer versions)
+            from langchain_text_splitters import CharacterTextSplitter
+            token_splitter = CharacterTextSplitter(
                 chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
+                chunk_overlap=chunk_overlap,
+                separator=" "
             )
 
             final_chunks = []
@@ -76,15 +80,13 @@ class RAGLangChain:
                     ))
             
             preview_chunks(final_chunks, max_show=20)
-
-            # ✅ 修复：用 final_chunks
             print(f"📊 Final split into {len(final_chunks)} token-aware chunks")
                         
             # ==========================================
-            # 存入向量库
+            # 3. Store in vector database
             # ==========================================
             self.vectorstore = Chroma.from_documents(
-                documents=final_chunks,  # ✅ 修复：用 final_chunks
+                documents=final_chunks,
                 embedding=HuggingFaceEmbeddings(
                     model_name="sentence-transformers/all-MiniLM-L6-v2",
                     model_kwargs={'device': 'cpu'},
@@ -106,13 +108,22 @@ class RAGLangChain:
             )
             print(f"📂 Loaded existing vector store: {collection_name}")
         
-        self.llm = Ollama(model="llama3:latest", temperature=0.1)
-        
+        # ==========================================
+        # 4. LLM - ChatOllama for local model inference
+        # ==========================================
+        self.llm = ChatOllama(model="llama3:latest", temperature=0.1)
+                
+        # ==========================================
+        # 5. Retriever - fetches relevant documents from vector store
+        # ==========================================
         self.retriever = self.vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 10}
+            search_type="mmr",  # Maximum Marginal Relevance - balances relevance and diversity
+            search_kwargs={"k": 10}  # Return top 10 most relevant chunks
         )
         
+        # ==========================================
+        # 6. Prompt template
+        # ==========================================
         prompt_template = """
         You are a helpful assistant. Answer the question based on the provided context.
 
@@ -129,29 +140,45 @@ class RAGLangChain:
         Answer:
         """
         
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", prompt_template),
+        ])
+        
+        # ==========================================
+        # 7. LCEL Chain - the "pipeline" that connects all components
+        # ==========================================
+        # ✅ This is LangChain 1.0's "line" - a declarative pipeline
+        # Data flows: retrieve → prompt → llm → parse
+        self.qa_chain = (
+            {
+                "context": self.retriever,           # Step 1: Retrieve relevant docs
+                "question": RunnablePassthrough()    # Step 2: Pass user question through unchanged
+            }
+            | self.prompt                            # Step 3: Format prompt with context + question
+            | self.llm                               # Step 4: Send to LLM for generation
+            | StrOutputParser()                      # Step 5: Parse LLM response to string
         )
         
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=self.retriever,
-            chain_type_kwargs={"prompt": PROMPT},
-            return_source_documents=True
-        )
+        # Keep reference to retriever for displaying source documents in ask()
+        self.retriever_raw = self.retriever
     
     def ask(self, query: str) -> str:
-        result = self.qa_chain.invoke({"query": query})
-        print(f"\n📚 Retrieved {len(result['source_documents'])} chunks:")
-        for i, doc in enumerate(result['source_documents'][:10]):
-            print(f"  [{i+1}] {doc.page_content[:200]}...")
-            print(f"      Metadata: {doc.metadata}\n")
-        return result["result"]
+        """Query the RAG system and return the answer"""
+        # Execute the chain with the user's query
+        result = self.qa_chain.invoke(query)
+        
+        # Display retrieved source documents for transparency
+        source_docs = self.retriever_raw.invoke(query)
+        print(f"\n📚 Retrieved {len(source_docs)} chunks:")
+        for i, doc in enumerate(source_docs[:10]):
+            print(f"[{i+1}] {doc.page_content[:200]}...")
+            print(f"Metadata: {doc.metadata}\n")
+        
+        return result
 
 
 def rag_chat_langchain():
+    """Main chat loop for the RAG chatbot"""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     pdf_path = os.path.join(current_dir, "..", "..", "uploads", "pdf_NCVD_ACSPCI_UserManual.pdf")
 
@@ -163,7 +190,7 @@ def rag_chat_langchain():
         chunk_overlap=120
     )
     
-    print("🤖 LangChain RAG Chatbot (type 'quit' to exit)\n")
+    print("🤖 LangChain 1.0 RAG Chatbot (type 'quit' to exit)\n")
     
     while True:
         query = input("\n❓ You: ")
