@@ -1,523 +1,1047 @@
 """
 PaddleOCR-based document structure extractor.
-Supports both PP-StructureV3 and PaddleOCR-VL-1.6
+
+Supports both PP-StructureV3 and PaddleOCR-VL-1.6.
+HTML/table cleaning is handled by the chunker.
 """
 
 import os
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
+
 
 # Disable OneDNN (avoids compatibility issues on Windows)
-os.environ['FLAGS_use_mkldnn'] = '0'
-os.environ['FLAGS_use_onednn'] = '0'
+os.environ["FLAGS_use_mkldnn"] = "0"
+os.environ["FLAGS_use_onednn"] = "0"
 
+
+# ============================================================
+# Regex
+# ============================================================
+
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"
+    "\U0001F300-\U0001F5FF"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FA6F"
+    "\U0001FA70-\U0001FAFF"
+    "\U00002702-\U000027B0"
+    "\U000024C2-\U0001F251"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+# Short form-field labels that VL often emits as markdown headings.
+_FIELD_LABEL_RE = re.compile(
+    r"^(TO|FROM|BILL TO|SHIP TO|SOLD TO|"
+    r"INVOICE\s*(NUMBER|NO\.?|#)|"
+    r"(ISSUE|DUE|INVOICE)\s*DATE|"
+    r"CURRENCY|DATE|P\.?O\.?\s*(NUMBER|NO\.?|#)?|"
+    r"DELIVERY ADDRESS|NOTES?|"
+    r"PAGE\s+\d+\s+OF\s+\d+)$",
+    re.IGNORECASE,
+)
+
+
+# Supported document titles
+_DOC_TITLE_RE = re.compile(
+    r"^(TAX\s+)?"
+    r"(INVOICE|PAYSLIP|PAY\s*SLIP|MEMO|RECEIPT|"
+    r"STATEMENT|REPORT|SALARY|BILL)$",
+    re.IGNORECASE,
+)
+
+
+# ============================================================
+# Basic text cleaning
+# ============================================================
 
 def clean_text(text: str) -> str:
     """
-    Clean text extracted from scanned PDFs (OCR results).
-    Removes emojis, stray characters, and normalizes whitespace.
+    Basic OCR text cleanup.
+
+    NOTE:
+    HTML/table processing is intentionally NOT done here.
+    The chunker handles HTML/table cleaning later.
     """
+
     if not text:
         return text
-    
+
     # Remove emojis
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F700-\U0001F77F"
-        "\U0001F780-\U0001F7FF"
-        "\U0001F800-\U0001F8FF"
-        "\U0001F900-\U0001F9FF"
-        "\U0001FA00-\U0001FA6F"
-        "\U0001FA70-\U0001FAFF"
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "]+",
-        flags=re.UNICODE
-    )
-    text = emoji_pattern.sub('', text)
-    
-    # Clean up common OCR artifacts
-    text = re.sub(r'^[^\w\s]{1,3}', '', text)      # Remove leading garbage chars
-    text = re.sub(r'^[\d]{1,2}', '', text)         # Remove leading numbers
-    text = re.sub(r'[^\w\s\.\,\!\?\-\:\;\(\)"\']+$', '', text)  # Remove trailing garbage
-    
+    text = _EMOJI_PATTERN.sub("", text)
+
     # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+
     return text
 
 
+# ============================================================
+# Generic object attribute helper
+# ============================================================
+
+def _get_attr(obj, key, default=None):
+    if obj is None:
+        return default
+
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+
+    return getattr(obj, key, default)
+
+
+# ============================================================
+# Heading detection
+# ============================================================
+
+def _is_field_label(text: str) -> bool:
+    """
+    Detect field labels such as:
+
+        TO
+        FROM
+        INVOICE NUMBER
+        DATE
+        CURRENCY
+        BILL TO
+    """
+
+    label = re.sub(r"[#*:]+", "", text or "").strip()
+
+    return (
+        bool(label)
+        and bool(_FIELD_LABEL_RE.match(label))
+    )
+
+
+def _is_document_heading(text: str) -> bool:
+    """
+    Detect actual document titles such as:
+
+        INVOICE
+        MEMO
+        RECEIPT
+        STATEMENT
+    """
+
+    heading = (text or "").lstrip("#").strip()
+
+    if not heading:
+        return False
+
+    # Do not treat fields as document headings
+    if _is_field_label(heading):
+        return False
+
+    # Document title should normally not contain numbers
+    if re.search(r"\d", heading):
+        return False
+
+    # Document title should normally not contain colon
+    if ":" in heading:
+        return False
+
+    return bool(_DOC_TITLE_RE.match(heading))
+
+
+# ============================================================
+# PaddleDocLoader
+# ============================================================
+
 class PaddleDocLoader:
-    """Load and extract document structure using PaddleOCR."""
-    
+    """
+    Load and extract document structure using PaddleOCR.
+
+    PaddleOCR-VL is the preferred parser.
+
+    HTML/table conversion is NOT performed here.
+    The downstream chunker handles that.
+    """
+
     def __init__(
         self,
         use_gpu: bool = False,
-        lang: str = 'en',
+        lang: str = "en",
         use_vl: bool = True,
     ):
         """
-        Initialize the PaddleOCR document loader.
-        
         Args:
-            use_gpu: Whether to use GPU for inference
-            lang: Language code ('en', 'ch', 'korean', 'japan')
-            use_vl: Use PaddleOCR-VL-1.6 (if False, falls back to PP-StructureV3)
+            use_gpu:
+                Whether to use GPU for inference.
+
+            lang:
+                Language code.
+
+            use_vl:
+                Use PaddleOCR-VL-1.6.
+                If False, use PP-StructureV3.
         """
+
         self.lang = lang
         self.use_gpu = use_gpu
         self.use_vl = use_vl
         self.parser = None
-        
-        print(f"🔄 Initializing PaddleOCR Parser (GPU: {use_gpu}, Lang: {lang})...")
-        
+
+        print(
+            f"🔄 Initializing PaddleOCR Parser "
+            f"(GPU: {use_gpu}, Lang: {lang})..."
+        )
+
         if use_vl:
             self._init_vl_parser()
         else:
             self._init_structure_parser()
-    
+
+    # ========================================================
+    # Initialize PaddleOCR-VL
+    # ========================================================
+
     def _init_vl_parser(self):
-        """Initialize PaddleOCR-VL-1.6 parser. Falls back to PP-StructureV3 on failure."""
+        """
+        Initialize PaddleOCR-VL-1.6.
+
+        Falls back to PP-StructureV3 if unavailable.
+        """
+
         try:
             from paddleocr import PaddleOCRVL
-            
+
             print("   Using PaddleOCR-VL-1.6...")
-            
+
             init_methods = [
-                lambda: PaddleOCRVL(pipeline_version="v1.6", device='gpu' if self.use_gpu else 'cpu'),
-                lambda: PaddleOCRVL(pipeline_version="v1.6"),
-                lambda: PaddleOCRVL(pipeline_version="v1.5"),
+                lambda: PaddleOCRVL(
+                    pipeline_version="v1.6",
+                    device="gpu" if self.use_gpu else "cpu",
+                ),
+                lambda: PaddleOCRVL(
+                    pipeline_version="v1.6"
+                ),
+                lambda: PaddleOCRVL(
+                    pipeline_version="v1.5"
+                ),
                 lambda: PaddleOCRVL(),
             ]
-            
+
             for init_func in init_methods:
+
                 try:
                     self.parser = init_func()
-                    print("   ✅ PaddleOCR-VL initialized successfully")
+
+                    print(
+                        "   ✅ PaddleOCR-VL initialized successfully"
+                    )
+
                     return
+
                 except Exception as e:
-                    print(f"   ⚠️ VL init attempt failed: {e}")
-                    continue
-            
-            # 所有 VL 尝试都失败 → 回退到 PP-StructureV3
-            print("   ⚠️ All VL initialization attempts failed")
-            print("   🔄 Falling back to PP-StructureV3...")
+
+                    print(
+                        f"   ⚠️ VL init attempt failed: {e}"
+                    )
+
+            # All VL attempts failed
+            print(
+                "   ⚠️ All VL initialization attempts failed"
+            )
+
+            print(
+                "   🔄 Falling back to PP-StructureV3..."
+            )
+
             self.use_vl = False
+
             self._init_structure_parser()
-            
+
         except ImportError as e:
-            print(f"   ⚠️ PaddleOCRVL not available: {e}")
-            print("   🔄 Falling back to PP-StructureV3...")
+
+            print(
+                f"   ⚠️ PaddleOCRVL not available: {e}"
+            )
+
+            print(
+                "   🔄 Falling back to PP-StructureV3..."
+            )
+
             self.use_vl = False
+
             self._init_structure_parser()
+
         except Exception as e:
-            print(f"   ❌ VL initialization failed: {e}")
-            print("   🔄 Falling back to PP-StructureV3...")
+
+            print(
+                f"   ❌ VL initialization failed: {e}"
+            )
+
+            print(
+                "   🔄 Falling back to PP-StructureV3..."
+            )
+
             self.use_vl = False
+
             self._init_structure_parser()
-    
+
+    # ========================================================
+    # Initialize PP-StructureV3
+    # ========================================================
+
     def _init_structure_parser(self):
         """Initialize PP-StructureV3 parser."""
+
         try:
             from paddleocr import PPStructureV3
-            
+
             print("   Using PP-StructureV3...")
-            
+
             init_methods = [
-                lambda: PPStructureV3(device='gpu' if self.use_gpu else 'cpu'),
-                lambda: PPStructureV3(device='gpu' if self.use_gpu else 'cpu', show_log=False),
-                lambda: PPStructureV3(show_log=False),
+                lambda: PPStructureV3(
+                    device="gpu" if self.use_gpu else "cpu"
+                ),
+                lambda: PPStructureV3(
+                    device="gpu" if self.use_gpu else "cpu",
+                    show_log=False,
+                ),
+                lambda: PPStructureV3(
+                    show_log=False
+                ),
                 lambda: PPStructureV3(),
             ]
-            
+
             for init_func in init_methods:
+
                 try:
                     self.parser = init_func()
-                    print("   ✅ PP-StructureV3 initialized successfully")
+
+                    print(
+                        "   ✅ PP-StructureV3 initialized successfully"
+                    )
+
                     return
-                except Exception as e:
+
+                except Exception:
                     continue
-            
-            raise RuntimeError("All Structure initialization attempts failed")
-            
+
+            raise RuntimeError(
+                "All Structure initialization attempts failed"
+            )
+
         except Exception as e:
-            print(f"   ❌ Structure parser initialization failed: {e}")
+
+            print(
+                f"   ❌ Structure parser initialization failed: {e}"
+            )
+
             raise
-    
-    def extract_structure(self, pdf_path: str) -> List[Dict]:
+
+    # ========================================================
+    # Main extraction entry
+    # ========================================================
+
+    def extract_structure(
+        self,
+        pdf_path: str
+    ) -> List[Dict]:
         """
         Extract document structure from PDF.
-        Assumes the PDF is already detected as scanned (OCR required).
-        
-        Args:
-            pdf_path: Path to the PDF file
-            
-        Returns:
-            List of extracted elements with page, type, text, bbox, and confidence
+
+        The PDF is assumed to be scanned,
+        therefore OCR is required.
         """
+
         if not os.path.exists(pdf_path):
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-        
-        print(f"📄 PDF type: Scanned (OCR required)")
-        
+            raise FileNotFoundError(
+                f"PDF file not found: {pdf_path}"
+            )
+
+        print(
+            "📄 PDF type: Scanned (OCR required)"
+        )
+
         if self.use_vl:
             return self._extract_with_vl(pdf_path)
-        else:
-            return self._extract_with_structure(pdf_path)
 
-    def _extract_with_vl(self, pdf_path: str) -> List[Dict]:
-        """Extract using PaddleOCR-VL."""
-        print("📄 Using PaddleOCR-VL for document parsing...")
-        
+        return self._extract_with_structure(pdf_path)
+
+    # ========================================================
+    # PaddleOCR-VL extraction
+    # ========================================================
+
+    def _extract_with_vl(
+        self,
+        pdf_path: str
+    ) -> List[Dict]:
+        """
+        Extract using PaddleOCR-VL.
+
+        Pipeline:
+
+            PDF
+             ↓
+        PaddleOCR-VL
+             ↓
+        Markdown
+             ↓
+        Parse Markdown
+             ↓
+        Structured elements
+
+        No separate OCR text recovery is performed.
+        """
+
+        print(
+            "📄 Using PaddleOCR-VL for document parsing..."
+        )
+
+        # ----------------------------------------------------
+        # Run PaddleOCR-VL
+        # ----------------------------------------------------
+
         try:
-            result = list(self.parser.predict(pdf_path))
+            result = list(
+                self.parser.predict(pdf_path)
+            )
+
         except Exception as e:
-            print(f"   ❌ VL prediction failed: {e}")
+
+            print(
+                f"   ❌ VL prediction failed: {e}"
+            )
+
             return []
-        
+
+        # ----------------------------------------------------
+        # Process pages
+        # ----------------------------------------------------
+
         all_elements = []
-        
+
         for idx, res in enumerate(result):
-            print(f"   Processing page {idx + 1}")
-            
+
+            page_num = idx + 1
+
+            print(
+                f"   Processing page {page_num}"
+            )
+
             try:
-                if hasattr(res, 'save_to_markdown'):
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(mode='w+', suffix='.md', delete=False) as f:
-                        temp_path = f.name
-                    
-                    res.save_to_markdown(temp_path)
-                    
-                    with open(temp_path, 'r', encoding='utf-8') as f:
-                        md_text = f.read()
-                    
-                    os.unlink(temp_path)
-                    
-                    if md_text and len(md_text) > 10:
-                        print(f"   ✅ Page {idx + 1} markdown: {len(md_text)} chars")
-                        
-                        # ============================================================
-                        # print Raw Markdown
-                        # ============================================================
-                        print(f"   📝 RAW MARKDOWN (page {idx + 1}):")
-                        print("-" * 80)
-                        print(md_text[:1000])
-                        print("-" * 80)
-                        
-                        page_elements = self._parse_markdown(md_text, page_num=idx + 1)
-                        all_elements.extend(page_elements)
-                        print(f"   ✅ Extracted {len(page_elements)} elements from page {idx + 1}")
+
+                # ------------------------------------------------
+                # 1. Get markdown
+                # ------------------------------------------------
+
+                md_text = self._markdown_from_vl_result(res)
+
+                if not md_text:
+
+                    print(
+                        f"   ⚠️ No markdown found "
+                        f"for page {page_num}"
+                    )
+
+                    continue
+
+                # ------------------------------------------------
+                # 2. Parse markdown
+                # ------------------------------------------------
+
+                page_elements = self._parse_markdown(
+                    md_text,
+                    page_num=page_num,
+                )
+
+                # ------------------------------------------------
+                # 3. Store elements
+                # ------------------------------------------------
+
+                if page_elements:
+
+                    print(
+                        f"   ✅ Page {page_num} markdown: "
+                        f"{len(md_text)} chars"
+                    )
+
+                    print(
+                        f"   📝 RAW MARKDOWN "
+                        f"(page {page_num}):"
+                    )
+
+                    print("-" * 80)
+
+                    print(
+                        md_text[:1000]
+                    )
+
+                    print("-" * 80)
+
+                    all_elements.extend(
+                        page_elements
+                    )
+
+                    print(
+                        f"   ✅ Extracted "
+                        f"{len(page_elements)} elements "
+                        f"from page {page_num}"
+                    )
+
+                else:
+
+                    print(
+                        f"   ⚠️ No elements extracted "
+                        f"from page {page_num}"
+                    )
+
             except Exception as e:
-                print(f"   save_to_markdown error for page {idx + 1}: {e}")
-        
-        print(f"   Total elements across all pages: {len(all_elements)}")
+
+                print(
+                    f"   ❌ VL extract error "
+                    f"for page {page_num}: {e}"
+                )
+
+        print(
+            f"   Total elements across all pages: "
+            f"{len(all_elements)}"
+        )
+
         return all_elements
-    
-    def _extract_with_structure(self, pdf_path: str) -> List[Dict]:
-        """Extract using PP-StructureV3."""
-        print("📄 Using PP-StructureV3 for layout detection...")
-        
+
+    # ========================================================
+    # PP-StructureV3 extraction
+    # ========================================================
+
+    def _extract_with_structure(
+        self,
+        pdf_path: str
+    ) -> List[Dict]:
+        """
+        Extract using PP-StructureV3.
+
+        No additional OCR recovery is performed.
+        """
+
+        print(
+            "📄 Using PP-StructureV3 for layout detection..."
+        )
+
         try:
-            result = list(self.parser.predict(pdf_path))
+
+            result = list(
+                self.parser.predict(pdf_path)
+            )
+
         except Exception as e:
-            print(f"   ❌ Structure prediction failed: {e}")
+
+            print(
+                f"   ❌ Structure prediction failed: {e}"
+            )
+
             return []
-        
+
         elements = []
-        
+
         for page_idx, page in enumerate(result):
-            parsing_list = getattr(page, 'parsing_res_list', [])
-            if not parsing_list and isinstance(page, dict):
-                parsing_list = page.get('parsing_res_list', [])
-            
-            if parsing_list:
-                for block in parsing_list:
-                    text = getattr(block, 'content', '')
-                    if not text and isinstance(block, dict):
-                        text = block.get('content', '')
-                    
-                    if text and text.strip():
-                        label = getattr(block, 'label', 'text')
-                        if not label and isinstance(block, dict):
-                            label = block.get('label', 'text')
-                        
-                        bbox = getattr(block, 'bbox', [])
-                        if not bbox and isinstance(block, dict):
-                            bbox = block.get('bbox', [])
-                        
-                        elements.append({
-                            'page': page_idx + 1,
-                            'type': label,
-                            'text': clean_text(text.strip()),
-                            'bbox': bbox,
-                            'confidence': 1.0
-                        })
-                continue
-            
-            # Fallback: extract from OCR results
-            ocr_res = getattr(page, 'overall_ocr_res', {})
-            if not ocr_res and isinstance(page, dict):
-                ocr_res = page.get('overall_ocr_res', {})
-            
-            rec_texts = getattr(ocr_res, 'rec_texts', [])
-            if not rec_texts and isinstance(ocr_res, dict):
-                rec_texts = ocr_res.get('rec_texts', [])
-            
-            for text in rec_texts:
-                if text and text.strip():
-                    elements.append({
-                        'page': page_idx + 1,
-                        'type': 'text',
-                        'text': clean_text(text.strip()),
-                        'bbox': [],
-                        'confidence': 1.0
-                    })
-        
-        print(f"✅ Extracted {len(elements)} elements")
+
+            page_num = page_idx + 1
+
+            page_elements = []
+
+            parsing_list = (
+                _get_attr(
+                    page,
+                    "parsing_res_list"
+                )
+                or []
+            )
+
+            for block in parsing_list:
+
+                text = _get_attr(
+                    block,
+                    "content",
+                    ""
+                )
+
+                if not text:
+                    continue
+
+                if not str(text).strip():
+                    continue
+
+                label = (
+                    _get_attr(
+                        block,
+                        "label",
+                        "text"
+                    )
+                    or "text"
+                )
+
+                bbox = (
+                    _get_attr(
+                        block,
+                        "bbox",
+                        []
+                    )
+                    or []
+                )
+
+                element_type = (
+                    "heading"
+                    if label in (
+                        "doc_title",
+                        "paragraph_title",
+                        "title",
+                    )
+                    else label
+                )
+
+                page_elements.append(
+                    {
+                        "page": page_num,
+                        "type": element_type,
+                        "text": clean_text(
+                            str(text).strip()
+                        ),
+                        "bbox": bbox,
+                        "confidence": 1.0,
+                    }
+                )
+
+            elements.extend(page_elements)
+
+        print(
+            f"✅ Extracted {len(elements)} elements"
+        )
+
         return elements
-    
-    def _parse_markdown(self, md_text: str, page_num: int = 1) -> List[Dict]:
-        """Parse Markdown text into structured elements."""
+
+    # ========================================================
+    # Get Markdown from PaddleOCR-VL result
+    # ========================================================
+
+    def _markdown_from_vl_result(
+        self,
+        res
+    ) -> str:
+        """
+        Read markdown from PaddleOCR-VL result.
+
+        Supports:
+
+        1. res.markdown as string
+        2. res.markdown as dict
+        3. save_to_markdown()
+        """
+
+        markdown = _get_attr(
+            res,
+            "markdown"
+        )
+
+        # ----------------------------------------------------
+        # Case 1: markdown is string
+        # ----------------------------------------------------
+
+        if (
+            isinstance(markdown, str)
+            and markdown.strip()
+        ):
+
+            return markdown
+
+        # ----------------------------------------------------
+        # Case 2: markdown is dict
+        # ----------------------------------------------------
+
+        if isinstance(markdown, dict):
+
+            for key in (
+                "markdown",
+                "text",
+                "markdown_texts",
+            ):
+
+                value = markdown.get(key)
+
+                if (
+                    isinstance(value, str)
+                    and value.strip()
+                ):
+
+                    return value
+
+                if isinstance(value, list):
+
+                    joined = "\n".join(
+                        str(item)
+                        for item in value
+                        if item
+                    )
+
+                    if joined.strip():
+
+                        return joined
+
+        # ----------------------------------------------------
+        # Case 3: save_to_markdown()
+        # ----------------------------------------------------
+
+        if not hasattr(
+            res,
+            "save_to_markdown"
+        ):
+
+            return ""
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+
+            res.save_to_markdown(tmpdir)
+
+            parts = []
+
+            for root, _, files in os.walk(
+                tmpdir
+            ):
+
+                for name in sorted(files):
+
+                    if not name.lower().endswith(
+                        ".md"
+                    ):
+
+                        continue
+
+                    path = os.path.join(
+                        root,
+                        name
+                    )
+
+                    with open(
+                        path,
+                        "r",
+                        encoding="utf-8"
+                    ) as handle:
+
+                        parts.append(
+                            handle.read()
+                        )
+
+            return "\n\n".join(parts)
+
+    # ========================================================
+    # Parse Markdown
+    # ========================================================
+
+    def _parse_markdown(
+        self,
+        md_text: str,
+        page_num: int = 1
+    ) -> List[Dict]:
+        """
+        Parse PaddleOCR-VL Markdown into
+        structured elements.
+
+        IMPORTANT:
+
+        This function does NOT remove HTML.
+
+        HTML/table processing is left to
+        the chunker.
+        """
+
         if not md_text:
             return []
-        
-        md_text = md_text.replace('\\n', '\n').replace('\\"', '"').replace('\\t', ' ')
-        
-        # ============================================================
-        # Step 1: Remove all HTML tags, preserve text content
-        # ============================================================
-        # Remove <div> and </div>
-        md_text = re.sub(r'<div[^>]*>', '', md_text)
-        md_text = re.sub(r'</div>', '', md_text)
-        
-        # Remove <p> and </p>
-        md_text = re.sub(r'<p[^>]*>', '', md_text)
-        md_text = re.sub(r'</p>', '', md_text)
-        
-        # Remove <span> and </span>
-        md_text = re.sub(r'<span[^>]*>', '', md_text)
-        md_text = re.sub(r'</span>', '', md_text)
-        
-        # Remove <table> and </table> (keep content)
-        md_text = re.sub(r'<table[^>]*>', '', md_text)
-        md_text = re.sub(r'</table>', '', md_text)
-        
-        # Remove table row/cell tags (keep content)
-        md_text = re.sub(r'<tr[^>]*>', '', md_text)
-        md_text = re.sub(r'</tr>', '', md_text)
-        md_text = re.sub(r'<td[^>]*>', '', md_text)
-        md_text = re.sub(r'</td>', '', md_text)
-        md_text = re.sub(r'<th[^>]*>', '', md_text)
-        md_text = re.sub(r'</th>', '', md_text)
-        
-        # Replace <br> with newline
-        md_text = re.sub(r'<br\s*/?>', '\n', md_text)
-        
-        # Remove style tags (bold, italic, underline, etc.)
-        md_text = re.sub(r'<[/]?(strong|b|i|em|u|small|big|font)[^>]*>', '', md_text)
-        
-        # Remove style attributes
-        md_text = re.sub(r'style="[^"]*"', '', md_text)
-        
-        # Remove extra blank lines
-        md_text = re.sub(r'\n{3,}', '\n\n', md_text)
-        
-        # ============================================================
-        # Step 2: Split into lines and parse
-        # ============================================================
-        lines = md_text.split('\n')
-        
+
         elements = []
-        current_heading = None
-        current_content = []
-        
-        heading_keywords = ['SALARY', 'INVOICE', 'REPORT', 'STATEMENT', 'SUMMARY', 
-                        'TOTAL', 'EARNINGS', 'DEDUCTION', 'PAYSLIP', 'MONTH',
-                        'MEMO', 'BILL', 'RECEIPT', 'PAYMENT', 'BALANCE',
-                        'COMPANY', 'EMPLOYEE', 'PAYROLL']
-        
-        for line in lines:
+
+        seen_heading = False
+
+        # ----------------------------------------------------
+        # Process lines
+        # ----------------------------------------------------
+
+        for line in md_text.split("\n"):
+
             line = line.strip()
+
             if not line:
                 continue
-            
-            # Detect Markdown headings (#, ##, ###)
-            if line.startswith('#'):
-                 # Save previous heading's content
-                if current_heading is not None and current_content:
-                    elements.append({
-                        'page': page_num,
-                        'type': 'text',
-                        'text': clean_text(' '.join(current_content)),
-                        'bbox': [],
-                        'confidence': 1.0
-                    })
-                    current_content = []
-                
-                heading_text = line.lstrip('#').strip()
-                if heading_text:
-                    current_heading = heading_text
-                    elements.append({
-                        'page': page_num,
-                        'type': 'heading',
-                        'text': clean_text(heading_text),
-                        'bbox': [],
-                        'confidence': 1.0
-                    })
-                continue
-            
-            # Detect plain text headings
-            is_likely_heading = False
-            
-            # Condition 1: ALL CAPS and short (e.g., "INVOICE", "MEMO")
-            if len(line) < 60 and line.isupper():
-                is_likely_heading = True
-            
-            # Condition 2: Contains heading keywords (e.g., "SALARY", "EARNINGS")
-            if any(keyword in line.upper() for keyword in heading_keywords):
-                if len(line) < 80:
-                    is_likely_heading = True
-            
-            # Condition 3: Ends with colon and is short (e.g., "Employee:", "Total:")
-            if line.endswith(':') and 10 < len(line) < 60:
-                is_likely_heading = True
 
-            # Condition 4: Pattern like "Label: Value" (e.g., "Employee ID: 12345")
-            if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)*\s*[:]\s*\w+', line):
-                is_likely_heading = True
-            
-            if is_likely_heading and current_heading is None:
-                # Save previous content if exists
-                if current_heading is not None and current_content:
-                    elements.append({
-                        'page': page_num,
-                        'type': 'text',
-                        'text': clean_text(' '.join(current_content)),
-                        'bbox': [],
-                        'confidence': 1.0
-                    })
-                    current_content = []
-                
-                current_heading = line
-                elements.append({
-                    'page': page_num,
-                    'type': 'heading',
-                    'text': clean_text(line),
-                    'bbox': [],
-                    'confidence': 1.0
-                })
+            # Skip markdown separators
+            if re.match(
+                r"^[-*_`]{3,}$",
+                line
+            ):
                 continue
-            
-            # normal text
-            if current_heading is not None:
-                current_content.append(line)
-            else:
-                # No heading yet, treat as standalone text
-                elements.append({
-                    'page': page_num,
-                    'type': 'text',
-                    'text': clean_text(line),
-                    'bbox': [],
-                    'confidence': 1.0
-                })
-        
-        # Handle remaining content after the last heading
-        if current_heading is not None and current_content:
-            elements.append({
-                'page': page_num,
-                'type': 'text',
-                'text': clean_text(' '.join(current_content)),
-                'bbox': [],
-                'confidence': 1.0
-            })
-        
-        return elements
-    
-    def create_sections(self, pdf_path: str) -> Tuple[List[Dict], str]:
-        """
-        Group elements into sections by heading.
-        
-        Args:
-            pdf_path: Path to the PDF file
-            
-        Returns:
-            Tuple of (sections, document_title)
-        """
-        elements = self.extract_structure(pdf_path)
-        
-        if not elements:
-            print("⚠️  No elements extracted")
-            return [], ""
-        
-        sections = []
-        current_section = None
-        document_title = None
-        
-        for elem in elements:
-            if elem['type'] == 'heading':
-                if current_section:
-                    sections.append(current_section)
-                
-                if document_title is None:
-                    document_title = elem['text']
-                
-                current_section = {
-                    'heading': elem['text'],
-                    'page': elem.get('page', 1),
-                    'content': ''
-                }
-            else:
-                if current_section:
-                    current_section['content'] += elem['text'] + ' '
-                else:
-                    current_section = {
-                        'heading': 'Document Start',
-                        'page': elem.get('page', 1),
-                        'content': elem['text'] + ' '
+
+            # ------------------------------------------------
+            # Markdown heading
+            # ------------------------------------------------
+
+            if line.startswith("#"):
+
+                heading_text = (
+                    line.lstrip("#").strip()
+                )
+
+                if (
+                    heading_text
+                    and _is_document_heading(
+                        heading_text
+                    )
+                    and not seen_heading
+                ):
+
+                    seen_heading = True
+
+                    elements.append(
+                        {
+                            "page": page_num,
+                            "type": "heading",
+                            "text": clean_text(
+                                heading_text
+                            ),
+                            "bbox": [],
+                            "confidence": 1.0,
+                        }
+                    )
+
+                    continue
+
+                # Not a document title
+                line = heading_text
+
+            # ------------------------------------------------
+            # Plain-text document heading
+            # ------------------------------------------------
+
+            if (
+                _is_document_heading(line)
+                and not seen_heading
+            ):
+
+                seen_heading = True
+
+                elements.append(
+                    {
+                        "page": page_num,
+                        "type": "heading",
+                        "text": clean_text(line),
+                        "bbox": [],
+                        "confidence": 1.0,
                     }
-        
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Normal text / HTML / table content
+            # ------------------------------------------------
+
+            cleaned = clean_text(line)
+
+            if cleaned:
+
+                elements.append(
+                    {
+                        "page": page_num,
+                        "type": "text",
+                        "text": cleaned,
+                        "bbox": [],
+                        "confidence": 1.0,
+                    }
+                )
+
+        return elements
+
+    # ========================================================
+    # Create sections
+    # ========================================================
+
+    def create_sections(
+        self,
+        pdf_path: str
+    ) -> Tuple[List[Dict], str]:
+        """
+        Group extracted elements into sections
+        based on document headings.
+        """
+
+        elements = self.extract_structure(
+            pdf_path
+        )
+
+        if not elements:
+
+            print(
+                "⚠️ No elements extracted"
+            )
+
+            return [], ""
+
+        sections = []
+
+        current_section = None
+
+        document_title = None
+
+        # ----------------------------------------------------
+        # Group elements
+        # ----------------------------------------------------
+
+        for elem in elements:
+
+            if elem["type"] == "heading":
+
+                # Save previous section
+                if current_section:
+
+                    sections.append(
+                        current_section
+                    )
+
+                # First heading = document title
+                if document_title is None:
+
+                    document_title = (
+                        elem["text"]
+                    )
+
+                current_section = {
+                    "heading": elem["text"],
+                    "page": elem.get(
+                        "page",
+                        1
+                    ),
+                    "content": "",
+                }
+
+            else:
+
+                if current_section:
+
+                    current_section[
+                        "content"
+                    ] += (
+                        elem["text"] + " "
+                    )
+
+                else:
+
+                    current_section = {
+                        "heading": "Document Start",
+                        "page": elem.get(
+                            "page",
+                            1
+                        ),
+                        "content": (
+                            elem["text"] + " "
+                        ),
+                    }
+
+        # ----------------------------------------------------
+        # Save final section
+        # ----------------------------------------------------
+
         if current_section:
-            sections.append(current_section)
-        
-        print(f"✅ Created {len(sections)} sections")
-        return sections, document_title or ''
+
+            sections.append(
+                current_section
+            )
+
+        print(
+            f"✅ Created {len(sections)} sections"
+        )
+
+        return (
+            sections,
+            document_title or ""
+        )
 
 
-def extract_with_paddle(pdf_path: str, use_gpu: bool = False, use_vl: bool = True) -> Tuple[List[Dict], str]:
+# ============================================================
+# Convenience function
+# ============================================================
+
+def extract_with_paddle(
+    pdf_path: str,
+    use_gpu: bool = False,
+    use_vl: bool = True
+) -> Tuple[List[Dict], str]:
     """
-    Convenience function to extract sections from a scanned PDF using PaddleOCR.
-    
-    Args:
-        pdf_path: Path to the PDF file
-        use_gpu: Whether to use GPU for inference
-        use_vl: Use PaddleOCR-VL-1.6 (if False, falls back to PP-StructureV3)
-        
-    Returns:
-        Tuple of (sections, document_title)
+    Convenience function for extracting
+    sections from a scanned PDF.
     """
-    loader = PaddleDocLoader(use_gpu=use_gpu, use_vl=use_vl)
-    return loader.create_sections(pdf_path)
 
+    loader = PaddleDocLoader(
+        use_gpu=use_gpu,
+        use_vl=use_vl
+    )
+
+    return loader.create_sections(
+        pdf_path
+    )
+
+
+# ============================================================
+# Main
+# ============================================================
 
 if __name__ == "__main__":
+
     import sys
-    
+
     if len(sys.argv) < 2:
-        print("Usage: python paddle_loader.py <pdf_path>")
+
+        print(
+            "Usage: python paddle_loader.py <pdf_path>"
+        )
+
         sys.exit(1)
-    
+
     pdf_path = sys.argv[1]
-    
-    loader = PaddleDocLoader(use_vl=True)
-    sections, title = loader.create_sections(pdf_path)
-    
-    print(f"\n📌 Document Title: {title}")
-    print(f"📊 Found {len(sections)} sections")
-    
-    for i, section in enumerate(sections[:3]):
-        print(f"\nSection {i+1}: {section['heading'][:50]}...")
-        content_preview = section['content'][:100]
+
+    loader = PaddleDocLoader(
+        use_vl=True
+    )
+
+    sections, title = (
+        loader.create_sections(
+            pdf_path
+        )
+    )
+
+    print(
+        f"\n📌 Document Title: {title}"
+    )
+
+    print(
+        f"📊 Found {len(sections)} sections"
+    )
+
+    for i, section in enumerate(
+        sections[:3]
+    ):
+
+        print(
+            f"\nSection {i + 1}: "
+            f"{section['heading'][:50]}..."
+        )
+
+        content_preview = (
+            section["content"][:100]
+        )
+
         if content_preview:
-            print(f"  Content: {content_preview}...")
+
+            print(
+                f"  Content: "
+                f"{content_preview}..."
+            )

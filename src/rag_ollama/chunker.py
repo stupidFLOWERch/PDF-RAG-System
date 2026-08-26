@@ -1,5 +1,6 @@
 import re
 import tiktoken
+from typing import List, Dict, Optional, Tuple
 from .pdf_loader import (
     get_heading_score,
     calculate_document_avg_size,
@@ -12,99 +13,186 @@ def get_token_count(text):
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
     return len(enc.encode(text))
 
+def clean_html_tags(text):
+    """
+    Remove HTML tags from extracted text.
+
+    This only cleans the final document text.
+    It does NOT affect:
+    - heading detection
+    - section creation
+    - OCR extraction
+    - rule-based processing before flattening
+
+    Example:
+        <table><tr><td>Item</td><td>Qty</td></tr></table>
+
+    becomes:
+
+        Item Qty
+    """
+
+    if not text:
+        return ""
+
+    # Remove HTML tags such as:
+    # <table>
+    # </table>
+    # <tr>
+    # </tr>
+    # <td>
+    # </td>
+    # <td colspan="2">
+    # etc.
+    text = re.sub(r"<[^>]+>", " ", text)
+
+    # Clean multiple spaces
+    text = re.sub(r"[ \t]+", " ", text)
+
+    # Clean excessive blank lines
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+
+    return text.strip()
 
 def flatten_sections(sections, document_title, max_tokens=512):
     """
     Flatten sections into document chunks.
+
     First split by heading, then split long sections by token limit.
+
+    HTML tags are removed ONLY from the final document text
+    before storing into ChromaDB.
+
+    This does not affect rule-based section detection.
     """
+
     documents = []
-    
+
     for section in sections:
+
         heading = section["heading"]
         content = section.get("content", "").strip()
         page = section.get("page", 1)
-        
+
         # Skip sections with empty content
         if not content:
             continue
-        
-        full_text = heading + "\n\n" + content
+
+        # ============================================================
+        # Clean HTML from content BEFORE creating the final document
+        # ============================================================
+        clean_content = clean_html_tags(content)
+
+        # Clean heading as well, just in case
+        clean_heading = clean_html_tags(heading)
+
+        # Skip if cleaning resulted in empty content
+        if not clean_content:
+            continue
+
+        full_text = clean_heading + "\n\n" + clean_content
 
         # Get the number of tokens
         token_count = get_token_count(full_text)
-        
+
         if token_count <= max_tokens:
+
             # No need to split the section
             documents.append({
                 "text": full_text,
                 "metadata": {
                     "title": document_title or "",
-                    "heading": heading,
+                    "heading": clean_heading,
                     "page": page,
                     "chunk_type": "full"
                 }
             })
+
         else:
+
             # Split the section if the token count exceeds the limit
-            chunks = split_text_by_heading(full_text, heading, max_tokens)
-            
+            chunks = split_text_by_heading(
+                full_text,
+                clean_heading,
+                max_tokens
+            )
+
             for i, chunk_text in enumerate(chunks):
+
+                # Make absolutely sure no HTML survives
+                chunk_text = clean_html_tags(chunk_text)
+
                 documents.append({
                     "text": chunk_text,
                     "metadata": {
-                        "title": document_title,
-                        "heading": heading,
+                        "title": document_title or "",
+                        "heading": clean_heading,
                         "page": page,
                         "chunk_type": "split",
                         "chunk_index": i,
                         "total_chunks": len(chunks)
                     }
                 })
-            
-            print(f"✂️ Split '{heading[:30]}...' into {len(chunks)} chunks")
-    
-    return documents
 
+            print(
+                f"✂️ Split '{clean_heading[:30]}...' "
+                f"into {len(chunks)} chunks"
+            )
+
+    return documents
 
 def split_text_by_heading(full_text, heading, max_tokens=512):
     """
     Split text based on sentences while keeping the heading
     in every generated chunk.
+
+    HTML should already be removed before this function is called.
     """
+
     # Extract the content by removing the heading
     content = full_text.replace(heading, "", 1).strip()
-    
+
+    # Safety cleanup
+    content = clean_html_tags(content)
+    heading = clean_html_tags(heading)
+
     # Return the original text if the content is within the token limit
     if get_token_count(content) <= max_tokens:
-        return [full_text]
-    
+        return [heading + "\n\n" + content]
+
     # Split the content into sentences
     sentences = re.split(r'(?<=[.!?])\s+', content)
-    
+
     chunks = []
+
     current_chunk = [heading]
     current_tokens = get_token_count(heading)
-    
+
     for sentence in sentences:
+
         if not sentence.strip():
             continue
-            
+
+        sentence = clean_html_tags(sentence)
+
         sentence_tokens = get_token_count(sentence)
-        
-        if current_tokens + sentence_tokens > max_tokens and current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
+
+        if (
+            current_tokens + sentence_tokens > max_tokens
+            and len(current_chunk) > 1
+        ):
+            chunks.append("\n\n".join(current_chunk))
+
             current_chunk = [heading]
             current_tokens = get_token_count(heading)
-        
+
         current_chunk.append(sentence)
         current_tokens += sentence_tokens
-    
-    if current_chunk:
-        chunks.append('\n\n'.join(current_chunk))
-    
-    return chunks
 
+    if len(current_chunk) > 1:
+        chunks.append("\n\n".join(current_chunk))
+
+    return chunks
 
 def find_title_from_candidates(heading_candidates):
     """
@@ -479,28 +567,73 @@ def create_sections(elements):
     document_title = find_title_from_candidates(heading_candidates)
     print(f"📌 Document Title: {document_title}")
     
-    # ========== Step 5: Create sections ==========
+    # ========== Step 5: Create sections with table detection ==========
     temp_sections = []
     current_section = None
+    table_title = None
+    table_rows = []
+    in_table = False
     
     for i, element in enumerate(filtered_elements):
         
         if element.get("is_table", False):
             if current_section:
                 table_text = extract_table_content([element])
-                
                 if table_text:
                     current_section["content"] += table_text + "\n\n"
-            
             continue
         
         score = heading_scores[i]
         is_heading = score >= 4
+        text = element["text"].strip()
+        
+        # ✅ 检测 Table 标题
+        if is_heading and re.match(r'^Table\s+\d+', text, re.I):
+            # 保存之前的 section
+            if current_section:
+                # 如果有表格数据待保存
+                if in_table and table_rows:
+                    table_markdown = format_table_rows(table_title, table_rows)
+                    current_section["content"] += table_markdown + "\n\n"
+                temp_sections.append(current_section)
+            
+            table_title = text
+            table_rows = []
+            in_table = True
+            
+            current_section = {
+                "heading": text,
+                "page": element["page"],
+                "content": ""
+            }
+            print(f"📂 Created Table section: {text[:50]}... (score: {score})")
+            continue
+        
+        # ✅ 如果在 Table 模式下，收集数据行
+        if in_table and not is_heading:
+            # 检查是否是表格数据 (包含数字、n=、p-value 等)
+            if (re.search(r'\d+\.?\d*', text) and 'n=' in text) or \
+               re.search(r'p-value|t-value|p\s*<', text, re.I) or \
+               re.search(r'\(\d+\.?\d*%\)', text) or \
+               re.match(r'^[A-Z][a-z]+\s*\(n\s*=', text):
+                table_rows.append(text)
+                print(f"   📊 Table data: {text[:40]}...")
+                continue
+            else:
+                # 不是表格数据，退出 Table 模式
+                # 保存已收集的表格数据
+                if table_rows:
+                    table_markdown = format_table_rows(table_title, table_rows)
+                    current_section["content"] += table_markdown + "\n\n"
+                    table_rows = []
+                in_table = False
         
         if is_heading:
-            text = element["text"]
-            
+            # 保存之前的 section
             if current_section:
+                if in_table and table_rows:
+                    table_markdown = format_table_rows(table_title, table_rows)
+                    current_section["content"] += table_markdown + "\n\n"
                 temp_sections.append(current_section)
             
             current_section = {
@@ -508,18 +641,17 @@ def create_sections(elements):
                 "page": element["page"],
                 "content": ""
             }
-            
-            print(
-                f"📂 Created section: "
-                f"{text[:50]}... "
-                f"(score: {score})"
-            )
+            print(f"📂 Created section: {text[:50]}... (score: {score})")
         
         else:
             if current_section:
                 current_section["content"] += element["text"] + " "
     
+    # 保存最后一个 section
     if current_section:
+        if in_table and table_rows:
+            table_markdown = format_table_rows(table_title, table_rows)
+            current_section["content"] += table_markdown + "\n\n"
         temp_sections.append(current_section)
     
     # ========== Step 6: Merge empty sections ==========
@@ -563,6 +695,62 @@ def create_sections(elements):
     
     return sections, document_title
 
+def format_table_rows(table_title: str, rows: List[str]) -> str:
+    """
+    将表格行格式化为 Markdown 表格。
+    正确处理包含空格的单元格 (如 "Carbon paper, blue, 8.5x11")
+    """
+    if not rows or not table_title:
+        return ""
+    
+    # 检测分割符
+    # 如果行中包含多个空格，尝试按多个空格分割
+    parsed_rows = []
+    for row in rows:
+        # 尝试按多个空格分割 (保留列结构)
+        parts = re.split(r'\s{2,}', row.strip())
+        if len(parts) > 1:
+            parsed_rows.append([p.strip() for p in parts if p.strip()])
+        else:
+            # 按单个空格分割 (fallback)
+            parts = row.split()
+            if parts:
+                parsed_rows.append(parts)
+    
+    if len(parsed_rows) < 2:
+        return f"### {table_title}\n\n" + "\n".join(rows)
+    
+    # 确定最大列数
+    max_cols = max(len(r) for r in parsed_rows)
+    
+    # 检测表头
+    header_keywords = ['characteristics', 'control', 'experimental', 'group', 'variable', 'category']
+    header_idx = 0
+    for i, row in enumerate(parsed_rows):
+        row_text = ' '.join(row).lower()
+        if any(kw in row_text for kw in header_keywords):
+            header_idx = i
+            break
+    
+    # 构建 Markdown 表格
+    markdown = f"### {table_title}\n\n"
+    
+    # 表头
+    header = parsed_rows[header_idx]
+    while len(header) < max_cols:
+        header.append("")
+    markdown += "| " + " | ".join(header) + " |\n"
+    markdown += "|" + " --- |" * len(header) + "\n"
+    
+    # 数据行
+    for i, row in enumerate(parsed_rows):
+        if i == header_idx:
+            continue
+        while len(row) < max_cols:
+            row.append("")
+        markdown += "| " + " | ".join(row[:max_cols]) + " |\n"
+    
+    return markdown
 
 def merge_empty_sections(sections):
     """
