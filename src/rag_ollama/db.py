@@ -1,4 +1,5 @@
 import chromadb
+import re
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 import uuid
@@ -16,27 +17,20 @@ class VectorDB:
         collection_name: str = "documents",
         persist_directory: str = "./chroma_db"
     ):
-        """
-        Initialize vector database.
-
-        Args:
-            collection_name: Name of the ChromaDB collection.
-            persist_directory: Directory path for database persistence.
-        """
         self.collection_name = collection_name
         self.persist_directory = persist_directory
 
-        # 1. Initialize the embedding model
+        # 1. Embedding model
         self.embedding_model = SentenceTransformer(
-            'all-MiniLM-L6-v2'
+            "all-MiniLM-L6-v2"
         )
 
         print(
-            f"✅ Loaded embedding model: "
-            f"all-MiniLM-L6-v2"
+            "✅ Loaded embedding model: "
+            "all-MiniLM-L6-v2"
         )
 
-        # 2. Initialize ChromaDB
+        # 2. ChromaDB
         self.client = chromadb.PersistentClient(
             path=persist_directory,
             settings=Settings(
@@ -44,7 +38,7 @@ class VectorDB:
             )
         )
 
-        # 3. Get an existing collection or create a new one
+        # 3. Collection
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"}
@@ -58,6 +52,17 @@ class VectorDB:
         print(
             f"✅ Collection: {collection_name}, "
             f"existing docs: {self.collection.count()}"
+        )
+
+        # 4. Load reranker once
+        self.reranker = FlagReranker(
+            "BAAI/bge-reranker-v2-m3",
+            use_fp16=True
+        )
+
+        print(
+            "✅ Loaded reranker: "
+            "BAAI/bge-reranker-v2-m3"
         )
 
     def get_embedding(self, text: str) -> List[float]:
@@ -150,68 +155,43 @@ class VectorDB:
         filter_metadata: Optional[Dict] = None
     ) -> List[Dict]:
         """
-        Search for similar documents with keyword weighting.
+        Perform pure semantic/vector search.
+
+        The results are retrieved using the same
+        all-MiniLM-L6-v2 embedding model used
+        during document indexing.
         """
 
-        # 1. Perform semantic search and retrieve twice the requested results
         query_embedding = self.get_embedding(query)
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k * 2,
+            n_results=top_k,
             where=filter_metadata
         )
 
-        # 2. Format results and apply keyword-based weighting
         formatted_results = []
 
-        if results['documents']:
-            query_words = query.lower().split()
+        if results["documents"]:
+            for i in range(
+                len(results["documents"][0])
+            ):
 
-            for i in range(len(results['documents'][0])):
-                text = results['documents'][0][i]
-                metadata = results['metadatas'][0][i]
+                text = results["documents"][0][i]
+                metadata = results["metadatas"][0][i]
 
                 distance = (
-                    results['distances'][0][i]
-                    if results.get('distances')
+                    results["distances"][0][i]
+                    if results.get("distances")
                     else 1.0
                 )
-
-                # Apply a boost for keyword matches
-                boost = 0
-                heading = metadata.get(
-                    'heading',
-                    ''
-                ).lower()
-
-                for word in query_words:
-
-                    # Give a higher boost for matches in headings
-                    if word in heading:
-                        boost += 0.3
-
-                    # Give a smaller boost for matches in document text
-                    if word in text.lower():
-                        boost += 0.1
-
-                # Reduce the distance based on keyword matches
-                adjusted_distance = distance - boost
 
                 formatted_results.append({
                     "text": text,
                     "metadata": metadata,
-                    "id": results['ids'][0][i],
-                    "distance": distance,
-                    "adjusted_distance": adjusted_distance
+                    "id": results["ids"][0][i],
+                    "distance": distance
                 })
-
-            # Sort results by adjusted distance
-            formatted_results.sort(
-                key=lambda x: x['adjusted_distance']
-            )
-
-            formatted_results = formatted_results[:top_k]
 
         return formatted_results
 
@@ -221,28 +201,44 @@ class VectorDB:
         top_k: int = 10
     ) -> List[Dict]:
         """
-        Perform text-based keyword search with word-level matching.
+        Perform text-based keyword search.
+
+        Uses normalized word matching instead of
+        naive substring matching.
         """
 
         all_docs = self.get_all_documents()
 
-        # Remove common stopwords from the query
+        # Common English stopwords
         stopwords = {
-            'what', 'is', 'the', 'are', 'a', 'an',
-            'of', 'to', 'for', 'in', 'on', 'at',
-            'with', 'without', 'by', 'from', 'up',
-            'down', 'off', 'over', 'under', 'about',
-            'part'
+            "what", "is", "the", "are", "a", "an",
+            "of", "to", "for", "in", "on", "at",
+            "with", "without", "by", "from", "up",
+            "down", "off", "over", "under", "about",
+            "part", "and", "or", "between",
+            "does", "do", "how", "why", "which",
+            "that", "this", "these", "those",
+            "it", "its", "be", "as", "into"
         }
 
-        query_words = set(
-            query.lower().split()
+        # Normalize punctuation
+        normalized_query = query.lower()
+
+        # Keep technical identifiers such as:
+        # 27001:2022
+        # 27002:2022
+        # ISO/IEC
+        # 6.1.3
+        query_words = re.findall(
+            r"\b[\w/.-]+(?::[\w.-]+)?\b",
+            normalized_query
         )
 
         keywords = [
-            w
-            for w in query_words
-            if w not in stopwords and len(w) > 2
+            word
+            for word in query_words
+            if word not in stopwords
+            and len(word) > 2
         ]
 
         if not keywords:
@@ -252,38 +248,58 @@ class VectorDB:
 
         for doc in all_docs:
 
-            text = doc['text'].lower()
+            text = doc["text"].lower()
 
-            heading = doc['metadata'].get(
-                'heading',
-                ''
+            heading = doc["metadata"].get(
+                "heading",
+                ""
             ).lower()
 
-            # Check whether any keyword matches the document
+            # Tokenize document
+            text_words = set(
+                re.findall(
+                    r"\b[\w/.-]+(?::[\w.-]+)?\b",
+                    text
+                )
+            )
+
+            heading_words = set(
+                re.findall(
+                    r"\b[\w/.-]+(?::[\w.-]+)?\b",
+                    heading
+                )
+            )
+
             match_score = 0
+
+            matched_keywords = []
 
             for word in keywords:
 
-                # Give a higher weight to matches in headings
-                if word in heading:
-                    match_score += 2
+                # Exact heading match
+                if word in heading_words:
+                    match_score += 3
+                    matched_keywords.append(word)
 
-                # Give a lower weight to matches in document text
-                elif word in text:
+                # Exact text match
+                elif word in text_words:
                     match_score += 1
+                    matched_keywords.append(word)
 
             if match_score > 0:
+
                 matched.append({
-                    "text": doc['text'],
-                    "metadata": doc['metadata'],
-                    "id": doc['id'],
-                    "distance": 0.0,
-                    "match_score": match_score
+                    "text": doc["text"],
+                    "metadata": doc["metadata"],
+                    "id": doc["id"],
+                    "distance": None,
+                    "match_score": match_score,
+                    "matched_keywords": matched_keywords
                 })
 
-        # Sort results by match score in descending order
+        # Highest keyword score first
         matched.sort(
-            key=lambda x: x['match_score'],
+            key=lambda x: x["match_score"],
             reverse=True
         )
 
@@ -292,25 +308,26 @@ class VectorDB:
     def search_hybrid(
         self,
         query: str,
-        top_k: int = 10
+        top_k: int = 5,
+        candidate_k: int = 10
     ) -> List[Dict]:
+        """
+        Hybrid retrieval using:
+
+        1. Keyword search
+        2. Semantic/vector search
+        3. Content deduplication
+        4. BGE reranking
+        5. Final top-k results
+        """
 
         # ==========================================
-        # 1. Initialize the Reranker
-        # ==========================================
-
-        reranker = FlagReranker(
-            'BAAI/bge-reranker-v2-m3',
-            use_fp16=True
-        )
-
-        # ==========================================
-        # 2. Perform Text / Keyword Search
+        # 1. Keyword Search
         # ==========================================
 
         text_results = self.search_by_text(
             query,
-            top_k=top_k
+            top_k=candidate_k
         )
 
         print(
@@ -319,12 +336,12 @@ class VectorDB:
         )
 
         # ==========================================
-        # 3. Perform Semantic / Vector Search
+        # 2. Semantic Search
         # ==========================================
 
         semantic_results = self.search(
             query,
-            top_k=top_k
+            top_k=candidate_k
         )
 
         print(
@@ -333,13 +350,13 @@ class VectorDB:
         )
 
         # ==========================================
-        # 4. Combine Search Results
+        # 3. Combine
         # ==========================================
 
-        results = []
-
-        results.extend(text_results)
-        results.extend(semantic_results)
+        results = (
+            text_results +
+            semantic_results
+        )
 
         print(
             f"📚 Combined results: "
@@ -347,34 +364,42 @@ class VectorDB:
         )
 
         # ==========================================
-        # 5. Remove Duplicate Documents
+        # 4. Deduplicate by normalized content
         # ==========================================
 
         unique_results = []
-        seen_ids = set()
+        seen_texts = set()
 
         for result in results:
 
-            if result["id"] not in seen_ids:
+            normalized_text = " ".join(
+                result["text"]
+                .lower()
+                .split()
+            )
 
-                seen_ids.add(
-                    result["id"]
+            if normalized_text not in seen_texts:
+
+                seen_texts.add(
+                    normalized_text
                 )
 
-                unique_results.append(
-                    result
-                )
+                unique_results.append(result)
 
         results = unique_results
 
         print(
-            f"📚 Unique results after deduplication: "
+            f"📚 Unique results after "
+            f"content deduplication: "
             f"{len(results)}"
         )
 
         # ==========================================
-        # 6. Rerank the Search Results
+        # 5. Rerank
         # ==========================================
+
+        if not results:
+            return []
 
         print(
             f"🔄 Reranking "
@@ -386,13 +411,13 @@ class VectorDB:
             for result in results
         ]
 
-        scores = reranker.compute_score(
+        scores = self.reranker.compute_score(
             pairs,
             normalize=True
         )
 
         # ==========================================
-        # 7. Attach Reranker Scores to Results
+        # 6. Attach reranker scores
         # ==========================================
 
         for result, score in zip(
@@ -402,7 +427,7 @@ class VectorDB:
             result["rerank_score"] = score
 
         # ==========================================
-        # 8. Sort Results by Reranker Score
+        # 7. Sort by reranker score
         # ==========================================
 
         results.sort(
@@ -411,13 +436,13 @@ class VectorDB:
         )
 
         # ==========================================
-        # 9. Keep Only the Top K Results
+        # 8. Final top-k
         # ==========================================
 
-        results = results[:5]
+        results = results[:top_k]
 
         # ==========================================
-        # 10. Print the Final Results
+        # 9. Print final results
         # ==========================================
 
         print(
@@ -596,9 +621,9 @@ def search_pdf(
             Number of results to return.
     """
 
-    results = db.search(
+    results = db.search_hybrid(
         query,
-        top_k
+        top_k=top_k
     )
 
     print(

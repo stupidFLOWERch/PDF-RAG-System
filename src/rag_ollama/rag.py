@@ -25,7 +25,7 @@ class RAG:
     def ask(
         self,
         query: str,
-        top_k: int = 10
+        top_k: int = 5
     ) -> str:
         """
         Answer a user query using retrieved documents.
@@ -101,6 +101,46 @@ Answer:
 
         return answer.strip()
 
+    def ask_with_context(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> tuple[str, list[dict]]:
+        results = self.db.search_hybrid(query, top_k=top_k)
+
+        if not results:
+            return "No relevant documents found.", []
+
+        context = "".join(
+            f"[{index}] {result['text']}\n\n"
+            for index, result in enumerate(results, start=1)
+        )
+
+        prompt = f"""
+    Context:
+    {context}
+
+    Question:
+    {query}
+
+    Answer:
+    """
+
+        answer = self.llm.generate(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Answer only based on the provided context. "
+                        "If the answer cannot be found in the context, "
+                        "reply: 'I cannot find this information in the document.'"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": 0.1},
+        )
+        return answer.strip(), results
 
 def rag_chat():
     """

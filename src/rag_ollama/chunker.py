@@ -587,11 +587,11 @@ def create_sections(elements):
         is_heading = score >= 4
         text = element["text"].strip()
         
-        # ✅ 检测 Table 标题
+        # ✅ Detect Table title
         if is_heading and re.match(r'^Table\s+\d+', text, re.I):
-            # 保存之前的 section
+            # save previous section
             if current_section:
-                # 如果有表格数据待保存
+                # if there is table data to save
                 if in_table and table_rows:
                     table_markdown = format_table_rows(table_title, table_rows)
                     current_section["content"] += table_markdown + "\n\n"
@@ -609,7 +609,7 @@ def create_sections(elements):
             print(f"📂 Created Table section: {text[:50]}... (score: {score})")
             continue
         
-        # ✅ 如果在 Table 模式下，收集数据行
+        # ✅ If in Table, collect data rows
         if in_table and not is_heading:
             # 检查是否是表格数据 (包含数字、n=、p-value 等)
             if (re.search(r'\d+\.?\d*', text) and 'n=' in text) or \
@@ -620,8 +620,8 @@ def create_sections(elements):
                 print(f"   📊 Table data: {text[:40]}...")
                 continue
             else:
-                # 不是表格数据，退出 Table 模式
-                # 保存已收集的表格数据
+                # not table data, exit Table mode
+                # save collected table data
                 if table_rows:
                     table_markdown = format_table_rows(table_title, table_rows)
                     current_section["content"] += table_markdown + "\n\n"
@@ -629,7 +629,7 @@ def create_sections(elements):
                 in_table = False
         
         if is_heading:
-            # 保存之前的 section
+            # save previous section
             if current_section:
                 if in_table and table_rows:
                     table_markdown = format_table_rows(table_title, table_rows)
@@ -647,7 +647,7 @@ def create_sections(elements):
             if current_section:
                 current_section["content"] += element["text"] + " "
     
-    # 保存最后一个 section
+    # save last section
     if current_section:
         if in_table and table_rows:
             table_markdown = format_table_rows(table_title, table_rows)
@@ -697,22 +697,22 @@ def create_sections(elements):
 
 def format_table_rows(table_title: str, rows: List[str]) -> str:
     """
-    将表格行格式化为 Markdown 表格。
-    正确处理包含空格的单元格 (如 "Carbon paper, blue, 8.5x11")
+    Format table rows into Markdown table.
+    Correctly handle cells with spaces (e.g. "Carbon paper, blue, 8.5x11").
     """
     if not rows or not table_title:
         return ""
     
-    # 检测分割符
-    # 如果行中包含多个空格，尝试按多个空格分割
+    # detect delimiter
+    # if row contains multiple spaces, try to split by multiple spaces
     parsed_rows = []
     for row in rows:
-        # 尝试按多个空格分割 (保留列结构)
+        # try to split by multiple spaces (preserve column structure)
         parts = re.split(r'\s{2,}', row.strip())
         if len(parts) > 1:
             parsed_rows.append([p.strip() for p in parts if p.strip()])
         else:
-            # 按单个空格分割 (fallback)
+            # split by single space (fallback)
             parts = row.split()
             if parts:
                 parsed_rows.append(parts)
@@ -720,10 +720,10 @@ def format_table_rows(table_title: str, rows: List[str]) -> str:
     if len(parsed_rows) < 2:
         return f"### {table_title}\n\n" + "\n".join(rows)
     
-    # 确定最大列数
+    # determine maximum number of columns
     max_cols = max(len(r) for r in parsed_rows)
     
-    # 检测表头
+    # detect header
     header_keywords = ['characteristics', 'control', 'experimental', 'group', 'variable', 'category']
     header_idx = 0
     for i, row in enumerate(parsed_rows):
@@ -732,17 +732,17 @@ def format_table_rows(table_title: str, rows: List[str]) -> str:
             header_idx = i
             break
     
-    # 构建 Markdown 表格
+    # build Markdown table
     markdown = f"### {table_title}\n\n"
     
-    # 表头
+    # header
     header = parsed_rows[header_idx]
     while len(header) < max_cols:
         header.append("")
     markdown += "| " + " | ".join(header) + " |\n"
     markdown += "|" + " --- |" * len(header) + "\n"
     
-    # 数据行
+    
     for i, row in enumerate(parsed_rows):
         if i == header_idx:
             continue
