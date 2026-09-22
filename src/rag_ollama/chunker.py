@@ -54,7 +54,7 @@ def clean_html_tags(text):
 
     return text.strip()
 
-def flatten_sections(sections, document_title, max_tokens=512):
+def flatten_sections(sections, document_title, max_tokens=256):
     """
     Flatten sections into document chunks.
 
@@ -141,7 +141,68 @@ def flatten_sections(sections, document_title, max_tokens=512):
 
     return documents
 
-def split_text_by_heading(full_text, heading, max_tokens=512):
+def fallback_chunk_elements(elements, document_title=None, max_tokens=256):
+    """
+    当没有检测到 heading 时的 fallback 分块。
+    只复用 LangChain 的 RecursiveCharacterTextSplitter，
+    不牵扯 PyPDFLoader / Chroma / LLM。
+    """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from .token_splitter import TokenTextSplitter
+
+    # 1. 把所有非表格文本拼成一整段
+    parts = [
+        (el.get("text") or "").strip()
+        for el in elements
+        if not el.get("is_table", False) and (el.get("text") or "").strip()
+    ]
+    if not parts:
+        return []
+
+    full_text = "\n\n".join(parts)
+
+    # 2. 段落/句子级切分
+    recursive_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=max_tokens * 4,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""],
+    )
+    recursive_chunks = recursive_splitter.split_text(full_text)
+
+    # 3. 超长 chunk 再用 tiktoken 精确切
+    token_splitter = TokenTextSplitter(
+        chunk_size=max_tokens,
+        chunk_overlap=min(120, max_tokens // 4),
+    )
+
+    final_texts = []
+    for chunk in recursive_chunks:
+        if get_token_count(chunk) <= max_tokens:
+            final_texts.append(chunk)
+        else:
+            final_texts.extend(token_splitter.split_text(chunk))
+
+    # 4. 包装成现有 document 形状
+    documents = []
+    total = len(final_texts)
+    for i, text in enumerate(final_texts):
+        clean = clean_html_tags(text)
+        if not clean:
+            continue
+        documents.append({
+            "text": clean,
+            "metadata": {
+                "title": document_title or "",
+                "heading": "",
+                "page": 0,
+                "chunk_type": "fallback",
+                "chunk_index": i,
+                "total_chunks": total,
+            },
+        })
+    return documents
+
+def split_text_by_heading(full_text, heading, max_tokens=256):
     """
     Split text based on sentences while keeping the heading
     in every generated chunk.
@@ -692,7 +753,7 @@ def create_sections(elements):
     print("=" * 70)
     print(f"✅ Total sections created: {len(sections)}")
     print("=" * 70 + "\n")
-    
+
     return sections, document_title
 
 def format_table_rows(table_title: str, rows: List[str]) -> str:
@@ -830,3 +891,25 @@ def merge_empty_sections(sections):
             i += 1
     
     return merged
+
+def chunk_document(elements, document_title=None, max_tokens=256):
+    """统一入口：优先标题分块，无标题则 fallback。"""
+    sections, title = create_sections(elements)
+    title = title or document_title
+    documents = flatten_sections(sections, title)
+
+    if not documents:
+        print("⚠️ No headings detected — using fallback chunking.")
+        documents = fallback_chunk_elements(
+            elements,
+            document_title=title,
+            max_tokens=max_tokens,
+        )
+        print(f"✅ Fallback produced {len(documents)} chunks")
+
+        # ⬇️ 可选：预览前几个 chunk
+        for i, doc in enumerate(documents[:5]):
+            preview = doc["text"][:120].replace("\n", " ")
+            print(f"   [{i+1}] ({len(doc['text'].split())} words) {preview}...")
+
+    return documents, title

@@ -22,12 +22,12 @@ class VectorDB:
 
         # 1. Embedding model
         self.embedding_model = SentenceTransformer(
-            "all-MiniLM-L6-v2"
+            "BAAI/bge-base-en-v1.5"
         )
 
         print(
             "✅ Loaded embedding model: "
-            "all-MiniLM-L6-v2"
+            "BAAI/bge-base-en-v1.5"
         )
 
         # 2. ChromaDB
@@ -65,7 +65,11 @@ class VectorDB:
             "BAAI/bge-reranker-v2-m3"
         )
 
-    def get_embedding(self, text: str) -> List[float]:
+    def get_embedding(
+            self,
+            text: str,
+            is_query: bool = False
+        ) -> List[float]:
         """
         Generate an embedding vector for the input text.
 
@@ -75,6 +79,8 @@ class VectorDB:
         Returns:
             A list containing the embedding vector values.
         """
+        if is_query:
+            text = "Represent this sentence for searching relevant passages: " + text
         return self.embedding_model.encode(text).tolist()
 
     def add_documents(
@@ -118,7 +124,7 @@ class VectorDB:
             metadatas.append(metadata)
 
             # Generate the embedding vector
-            embedding = self.get_embedding(text)
+            embedding = self.get_embedding(text, is_query=False)
             embeddings.append(embedding)
 
         try:
@@ -151,18 +157,18 @@ class VectorDB:
     def search(
         self,
         query: str,
-        top_k: int = 10,
+        top_k: int = 20,
         filter_metadata: Optional[Dict] = None
     ) -> List[Dict]:
         """
         Perform pure semantic/vector search.
 
         The results are retrieved using the same
-        all-MiniLM-L6-v2 embedding model used
+        BAAI/bge-base-en-v1.5 embedding model used
         during document indexing.
         """
 
-        query_embedding = self.get_embedding(query)
+        query_embedding = self.get_embedding(query, is_query=True)
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
@@ -198,7 +204,7 @@ class VectorDB:
     def search_by_text(
         self,
         query: str,
-        top_k: int = 10
+        top_k: int = 20
     ) -> List[Dict]:
         """
         Perform text-based keyword search.
@@ -309,7 +315,7 @@ class VectorDB:
         self,
         query: str,
         top_k: int = 5,
-        candidate_k: int = 10
+        candidate_k: int = 20
     ) -> List[Dict]:
         """
         Hybrid retrieval using:
@@ -349,6 +355,32 @@ class VectorDB:
             f"{len(semantic_results)} results"
         )
 
+        # ✅ DEBUG: 看含 15,000 的 chunk 在哪
+        TARGET = "15,000"
+
+        print("\n" + "=" * 60)
+        print("🔍 TARGET CHUNK TRACKING")
+        print("=" * 60)
+
+        print(f"\n[Keyword search] {len(text_results)} results")
+        for i, r in enumerate(text_results):
+            if TARGET in r["text"]:
+                print(f"  ✅ Found at keyword rank {i+1}")
+                print(f"     match_score: {r.get('match_score')}")
+                print(f"     matched_keywords: {r.get('matched_keywords')}")
+                break
+        else:
+            print(f"  ❌ NOT in keyword results")
+
+        print(f"\n[Semantic search] {len(semantic_results)} results")
+        for i, r in enumerate(semantic_results):
+            if TARGET in r["text"]:
+                print(f"  ✅ Found at semantic rank {i+1}")
+                print(f"     distance: {r.get('distance'):.4f}")
+                break
+        else:
+            print(f"  ❌ NOT in semantic results")
+            
         # ==========================================
         # 3. Combine
         # ==========================================

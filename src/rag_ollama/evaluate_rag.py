@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .pdf_loader import extract_lines, merge_lines
-from .chunker import create_sections, flatten_sections
-from .db import VectorDB
+from .chunker import create_sections, flatten_sections, chunk_document
+from .db import VectorDB  
 from .rag import RAG
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +28,7 @@ DEFAULT_GROUND_TRUTH = (
 DEFAULT_OUTPUT = (
     PROJECT_ROOT / "evaluation" / "PlantPals_ragas_dataset.json"
 )
+
 
 def load_questions(path: Path) -> list[dict[str, Any]]:
     """Accept a JSON array or an object containing data/questions/items."""
@@ -98,7 +99,6 @@ def make_ragas_record(
         "answer": answer,
         "response": answer,
         "contexts": contexts,
-        "retrieved_contexts": contexts,
         # Retain metadata, ranks, scores, headings, etc. returned by VectorDB for diagnosis.
         "retrieved_chunks": retrieved_chunks,
     }

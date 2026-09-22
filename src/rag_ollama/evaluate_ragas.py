@@ -249,7 +249,7 @@ def create_evaluator():
 
     embedding_model = os.getenv(
         "RAGAS_EMBEDDING_MODEL",
-        "all-MiniLM-L6-v2"
+        "BAAI/bge-base-en-v1.5"
     )
 
     print()
