@@ -14,7 +14,7 @@ import numpy as np
 from typing import List, Dict
 
 # Import PaddleOCR loader
-from paddle_loader import PaddleDocLoader, extract_with_paddle
+from src.rag_ollama.paddle_loader import PaddleDocLoader, extract_with_paddle
 
 
 def convert_numpy(obj):

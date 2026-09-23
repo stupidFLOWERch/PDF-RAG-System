@@ -4,7 +4,8 @@ from typing import List, Dict, Optional, Tuple
 from .pdf_loader import (
     get_heading_score,
     calculate_document_avg_size,
-    get_bold_ratio
+    get_bold_ratio,
+    table_data_to_markdown
 )
 
 
@@ -141,65 +142,213 @@ def flatten_sections(sections, document_title, max_tokens=256):
 
     return documents
 
-def fallback_chunk_elements(elements, document_title=None, max_tokens=256):
+def fallback_chunk_elements(elements, title=None, max_tokens=256):
     """
-    当没有检测到 heading 时的 fallback 分块。
-    只复用 LangChain 的 RecursiveCharacterTextSplitter，
-    不牵扯 PyPDFLoader / Chroma / LLM。
+    Fallback chunking when no heading is detected.
+
+    Normal text:
+        Use RecursiveCharacterTextSplitter followed by
+        TokenTextSplitter when necessary.
+
+    Tables:
+        Preserve the structured table_data and convert it
+        directly to Markdown.
+
+    The original element order is preserved so that tables
+    remain in their correct reading position.
     """
+
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from .token_splitter import TokenTextSplitter
 
-    # 1. 把所有非表格文本拼成一整段
-    parts = [
-        (el.get("text") or "").strip()
-        for el in elements
-        if not el.get("is_table", False) and (el.get("text") or "").strip()
-    ]
-    if not parts:
-        return []
+    # --------------------------------------------------
+    # 1. Prepare elements in original reading order
+    # --------------------------------------------------
 
-    full_text = "\n\n".join(parts)
+    content_parts = []
 
-    # 2. 段落/句子级切分
+    for el in elements:
+
+        # ==================================================
+        # TABLE
+        # ==================================================
+
+        if el.get("is_table", False):
+
+            table_data = el.get("table_data", [])
+
+            if table_data:
+
+                table_text = table_data_to_markdown(
+                    table_data
+                )
+
+                if table_text:
+
+                    content_parts.append({
+                        "text": table_text,
+                        "page": el.get("page", 1),
+                        "chunk_type": "table",
+                    })
+
+            continue
+
+        # ==================================================
+        # NORMAL TEXT
+        # ==================================================
+
+        text = (el.get("text") or "").strip()
+
+        if text:
+
+            content_parts.append({
+                "text": text,
+                "page": el.get("page", 1),
+                "chunk_type": "text",
+            })
+
+    # --------------------------------------------------
+    # 2. Create text splitter
+    # --------------------------------------------------
+
     recursive_splitter = RecursiveCharacterTextSplitter(
         chunk_size=max_tokens * 4,
         chunk_overlap=100,
-        separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""],
+        separators=[
+            "\n\n",
+            "\n",
+            ". ",
+            "! ",
+            "? ",
+            "; ",
+            ", ",
+            " ",
+            "",
+        ],
     )
-    recursive_chunks = recursive_splitter.split_text(full_text)
 
-    # 3. 超长 chunk 再用 tiktoken 精确切
     token_splitter = TokenTextSplitter(
         chunk_size=max_tokens,
-        chunk_overlap=min(120, max_tokens // 4),
+        chunk_overlap=min(
+            120,
+            max_tokens // 4
+        ),
     )
 
-    final_texts = []
-    for chunk in recursive_chunks:
-        if get_token_count(chunk) <= max_tokens:
-            final_texts.append(chunk)
-        else:
-            final_texts.extend(token_splitter.split_text(chunk))
+    # --------------------------------------------------
+    # 3. Process elements in reading order
+    # --------------------------------------------------
 
-    # 4. 包装成现有 document 形状
-    documents = []
-    total = len(final_texts)
-    for i, text in enumerate(final_texts):
-        clean = clean_html_tags(text)
+    final_chunks = []
+
+    for item in content_parts:
+
+        text = item["text"]
+        page = item["page"]
+        chunk_type = item["chunk_type"]
+
+        # ==================================================
+        # TABLE
+        # ==================================================
+
+        if chunk_type == "table":
+
+            clean_table = clean_html_tags(text)
+
+            if clean_table:
+
+                final_chunks.append({
+                    "text": clean_table,
+                    "chunk_type": "table",
+                    "page": page,
+                })
+
+            continue
+
+        # ==================================================
+        # NORMAL TEXT
+        # ==================================================
+
+        recursive_chunks = recursive_splitter.split_text(text)
+
+        for chunk in recursive_chunks:
+
+            if not chunk.strip():
+                continue
+
+            # ----------------------------------------------
+            # Already within token limit
+            # ----------------------------------------------
+
+            if get_token_count(chunk) <= max_tokens:
+
+                final_chunks.append({
+                    "text": chunk,
+                    "chunk_type": "fallback",
+                    "page": page,
+                })
+
+            # ----------------------------------------------
+            # Still too large
+            # ----------------------------------------------
+
+            else:
+
+                split_chunks = token_splitter.split_text(
+                    chunk
+                )
+
+                for split_chunk in split_chunks:
+
+                    if not split_chunk.strip():
+                        continue
+
+                    final_chunks.append({
+                        "text": split_chunk,
+                        "chunk_type": "fallback",
+                        "page": page,
+                    })
+
+    # --------------------------------------------------
+    # 4. Remove empty chunks
+    # --------------------------------------------------
+
+    valid_chunks = []
+
+    for chunk in final_chunks:
+
+        clean = clean_html_tags(
+            chunk["text"]
+        )
+
         if not clean:
             continue
+
+        chunk["text"] = clean
+        valid_chunks.append(chunk)
+
+    # --------------------------------------------------
+    # 5. Convert to final document format
+    # --------------------------------------------------
+
+    total = len(valid_chunks)
+
+    documents = []
+
+    for i, chunk in enumerate(valid_chunks):
+
         documents.append({
-            "text": clean,
+            "text": chunk["text"],
             "metadata": {
-                "title": document_title or "",
+                "title": title or "",
                 "heading": "",
-                "page": 0,
-                "chunk_type": "fallback",
+                "page": chunk.get("page", 1),
+                "chunk_type": chunk["chunk_type"],
                 "chunk_index": i,
                 "total_chunks": total,
             },
         })
+
     return documents
 
 def split_text_by_heading(full_text, heading, max_tokens=256):
@@ -486,9 +635,18 @@ def create_sections(elements):
     heading_scores = []
 
     for i, element in enumerate(filtered_elements):
-        
+        if "Hello" in element.get("text", ""):
+            print(
+                "🚨 DEBUG TABLE:",
+                {
+                    "text": element.get("text"),
+                    "is_table": element.get("is_table", False),
+                    "page": element.get("page"),
+                    "bbox": element.get("bbox"),
+                }
+            )
         text_preview = element["text"][:50].replace('\n', ' ')
-        
+
         previous_element = (
             filtered_elements[i - 1]
             if i > 0
@@ -501,25 +659,29 @@ def create_sections(elements):
             else None
         )
 
-        score = get_heading_score(
-            element,
-            previous_element,
-            next_element,
-            document_avg_size,
-        )
+        # Table must never be treated as a heading
+        if element.get("is_table", False):
+            score = -999
+        else:
+            score = get_heading_score(
+                element,
+                previous_element,
+                next_element,
+                document_avg_size,
+            )
 
         heading_scores.append(score)
 
         is_heading = "✅" if score >= 4 else "  "
-        
+
         avg_size = (
             sum(element["size"]) / len(element["size"])
             if element["size"]
             else 0
         )
-        
+
         bold_ratio = get_bold_ratio(element)
-        
+
         if i < 100:
             print(
                 f"  {i+1:3d}. {is_heading} | "
@@ -539,20 +701,31 @@ def create_sections(elements):
     while i < len(filtered_elements):
         current = filtered_elements[i]
         current_score = heading_scores[i]
-        is_current_heading = current_score >= 4
+
+        # Table cannot be a heading
+        is_current_heading = (
+            not current.get("is_table", False)
+            and current_score >= 4
+        )
         
         if is_current_heading and i + 1 < len(filtered_elements):
             next_elem = filtered_elements[i + 1]
             
-            next_score = get_heading_score(
-                next_elem,
-                current,
-                None,
-                document_avg_size
+            next_score = (
+                -999
+                if next_elem.get("is_table", False)
+                else get_heading_score(
+                    next_elem,
+                    current,
+                    None,
+                    document_avg_size
+                )
             )
-            
-            is_next_heading = next_score >= 4
-            
+
+            is_next_heading = (
+                not next_elem.get("is_table", False)
+                and next_score >= 4
+            )
             if is_next_heading and current["page"] == next_elem["page"]:
                 y_diff = abs(
                     current["bbox"][1] - next_elem["bbox"][1]
@@ -581,27 +754,32 @@ def create_sections(elements):
 
     # Recalculate heading scores after merging elements
     heading_scores = []
-    
+
     for i, element in enumerate(filtered_elements):
+
         previous_element = (
             filtered_elements[i - 1]
             if i > 0
             else None
         )
-        
+
         next_element = (
             filtered_elements[i + 1]
             if i < len(filtered_elements) - 1
             else None
         )
-        
-        score = get_heading_score(
-            element,
-            previous_element,
-            next_element,
-            document_avg_size
-        )
-        
+
+        # Table must never be treated as a heading
+        if element.get("is_table", False):
+            score = -999
+        else:
+            score = get_heading_score(
+                element,
+                previous_element,
+                next_element,
+                document_avg_size
+            )
+
         heading_scores.append(score)
 
     # ========== Step 3: Detect heading candidates ==========
@@ -628,94 +806,99 @@ def create_sections(elements):
     document_title = find_title_from_candidates(heading_candidates)
     print(f"📌 Document Title: {document_title}")
     
-    # ========== Step 5: Create sections with table detection ==========
+    # ============================================================
+    # Step 5: Create sections
+    # ============================================================
+
     temp_sections = []
     current_section = None
-    table_title = None
-    table_rows = []
-    in_table = False
-    
+
     for i, element in enumerate(filtered_elements):
-        
+
+        # ========================================================
+        # TABLE
+        # ========================================================
         if element.get("is_table", False):
-            if current_section:
-                table_text = extract_table_content([element])
+
+            table_data = element.get("table_data", [])
+
+            if table_data:
+
+                table_text = table_data_to_markdown(table_data)
+
                 if table_text:
+
+                    if current_section is None:
+                        current_section = {
+                            "heading": "",
+                            "page": element["page"],
+                            "content": ""
+                        }
+
                     current_section["content"] += table_text + "\n\n"
+
             continue
-        
+
+        # ========================================================
+        # NORMAL TEXT
+        # ========================================================
+
         score = heading_scores[i]
         is_heading = score >= 4
         text = element["text"].strip()
-        
-        # ✅ Detect Table title
-        if is_heading and re.match(r'^Table\s+\d+', text, re.I):
-            # save previous section
-            if current_section:
-                # if there is table data to save
-                if in_table and table_rows:
-                    table_markdown = format_table_rows(table_title, table_rows)
-                    current_section["content"] += table_markdown + "\n\n"
-                temp_sections.append(current_section)
-            
-            table_title = text
-            table_rows = []
-            in_table = True
-            
-            current_section = {
-                "heading": text,
-                "page": element["page"],
-                "content": ""
-            }
-            print(f"📂 Created Table section: {text[:50]}... (score: {score})")
+
+        if not text:
             continue
-        
-        # ✅ If in Table, collect data rows
-        if in_table and not is_heading:
-            # 检查是否是表格数据 (包含数字、n=、p-value 等)
-            if (re.search(r'\d+\.?\d*', text) and 'n=' in text) or \
-               re.search(r'p-value|t-value|p\s*<', text, re.I) or \
-               re.search(r'\(\d+\.?\d*%\)', text) or \
-               re.match(r'^[A-Z][a-z]+\s*\(n\s*=', text):
-                table_rows.append(text)
-                print(f"   📊 Table data: {text[:40]}...")
-                continue
-            else:
-                # not table data, exit Table mode
-                # save collected table data
-                if table_rows:
-                    table_markdown = format_table_rows(table_title, table_rows)
-                    current_section["content"] += table_markdown + "\n\n"
-                    table_rows = []
-                in_table = False
-        
+
+        # ========================================================
+        # HEADING
+        # ========================================================
+
         if is_heading:
-            # save previous section
-            if current_section:
-                if in_table and table_rows:
-                    table_markdown = format_table_rows(table_title, table_rows)
-                    current_section["content"] += table_markdown + "\n\n"
+
+            # 保存之前的 section
+            if current_section is not None:
                 temp_sections.append(current_section)
-            
+
             current_section = {
                 "heading": text,
                 "page": element["page"],
                 "content": ""
             }
-            print(f"📂 Created section: {text[:50]}... (score: {score})")
-        
+
+            print(
+                f"📂 Created section: "
+                f"{text[:50]}... "
+                f"(score: {score})"
+            )
+
+        # ========================================================
+        # NORMAL CONTENT
+        # ========================================================
+
         else:
-            if current_section:
-                current_section["content"] += element["text"] + " "
-    
-    # save last section
-    if current_section:
-        if in_table and table_rows:
-            table_markdown = format_table_rows(table_title, table_rows)
-            current_section["content"] += table_markdown + "\n\n"
+
+            # ⭐⭐⭐ 关键修复 ⭐⭐⭐
+            #
+            # 即使没有 heading，也不能丢掉普通文字
+            #
+            if current_section is None:
+                current_section = {
+                    "heading": "",
+                    "page": element["page"],
+                    "content": ""
+                }
+
+            current_section["content"] += text + " "
+
+
+    # ============================================================
+    # SAVE LAST SECTION
+    # ============================================================
+
+    if current_section is not None:
         temp_sections.append(current_section)
-    
-    # ========== Step 6: Merge empty sections ==========
+
     sections = merge_empty_sections(temp_sections)
     
     # ============================================================
@@ -893,23 +1076,35 @@ def merge_empty_sections(sections):
     return merged
 
 def chunk_document(elements, document_title=None, max_tokens=256):
-    """统一入口：优先标题分块，无标题则 fallback。"""
+    # Step 1: Create sections
+    
     sections, title = create_sections(elements)
-    title = title or document_title
-    documents = flatten_sections(sections, title)
 
-    if not documents:
+    title = title or document_title
+
+    # Step 2: Check whether the document actually has
+    # at least one real heading
+    has_heading = any(
+        section.get("heading", "").strip()
+        for section in sections
+    )
+
+    # Step 3: Choose chunking strategy
+    if has_heading:
+        print("📚 Headings detected — using section-based chunking.")
+
+        documents = flatten_sections(
+            sections,
+            title
+        )
+
+    else:
         print("⚠️ No headings detected — using fallback chunking.")
+
         documents = fallback_chunk_elements(
             elements,
-            document_title=title,
-            max_tokens=max_tokens,
+            title=title,
+            max_tokens=max_tokens
         )
-        print(f"✅ Fallback produced {len(documents)} chunks")
-
-        # ⬇️ 可选：预览前几个 chunk
-        for i, doc in enumerate(documents[:5]):
-            preview = doc["text"][:120].replace("\n", " ")
-            print(f"   [{i+1}] ({len(doc['text'].split())} words) {preview}...")
 
     return documents, title

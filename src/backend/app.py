@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 import shutil
 import os
 import sys
-import fitz  # PyMuPDF for PDF text extraction
+import pymupdf
 from pathlib import Path
 
 # Project paths
@@ -54,30 +54,41 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # to be considered valid. Tune this to fit your documents.
 MIN_WORDS = 20
 
-# ============================================================
-# Helper Functions
-# ============================================================
-def is_scanned_pdf(pdf_path: str, threshold: int = 50) -> bool:
+def detect_pdf_type(pdf_path: str, text_threshold: int = 50) -> str:
     """
-    Detect if a PDF is scanned (no text layer) or text-based.
-
-    Args:
-        pdf_path: Path to the PDF file
-        threshold: Minimum character count to consider as text-based
+    Detect whether a PDF is text-based, scanned, or empty.
 
     Returns:
-        True if scanned (needs OCR), False if text-based
+        "text"    -> PDF has a usable text layer
+        "scanned" -> little/no text but contains images
+        "empty"   -> little/no text and no images
     """
-    try:
-        doc = fitz.open(pdf_path)
-        text = ""
-        for page in doc:
-            text += page.get_text()
-        doc.close()
-        return len(text.strip()) < threshold
-    except Exception:
-        return True
 
+    try:
+        doc = pymupdf.open(pdf_path)
+
+        total_text = 0
+        total_images = 0
+
+        for page in doc:
+            text = page.get_text("text").strip()
+            total_text += len(text)
+
+            images = page.get_images(full=True)
+            total_images += len(images)
+
+        doc.close()
+
+        if total_text >= text_threshold:
+            return "text"
+
+        if total_images > 0:
+            return "scanned"
+
+        return "empty"
+
+    except Exception:
+        return "empty"
 
 def validate_documents(documents: list) -> int:
     """
@@ -162,31 +173,35 @@ async def upload_pdf(file: UploadFile = File(...)):
     # 2. Extract + chunk (DO NOT touch DB yet)
     # --------------------------------------------------------
     try:
-        is_scanned = is_scanned_pdf(str(file_path))
-        print(
-            f"🔍 PDF Type: "
-            f"{'Scanned PDF (OCR)' if is_scanned else 'Text PDF (PyMuPDF)'}"
-        )
+        pdf_type = detect_pdf_type(str(file_path))
 
-        elements = []
+        print(f"🔍 PDF Type: {pdf_type}")
 
-        if is_scanned:
-            from rag_ollama.paddle_loader import extract_with_paddle
-            sections, title = extract_with_paddle(
-                str(file_path), use_gpu=False, use_vl=True,
+        if pdf_type == "empty":
+            raise HTTPException(
+                status_code=422,
+                detail="The PDF appears to be empty or contains no readable content."
             )
-            # paddle_loader.create_sections() already provides a
-            # "Document Start" fallback section when no headings exist,
-            # so empty documents here means OCR truly extracted nothing.
+
+        if pdf_type == "scanned":
+
+            from rag_ollama.paddle_loader import extract_with_paddle
+
+            sections, title = extract_with_paddle(
+                str(file_path),
+                use_gpu=False,
+                use_vl=True,
+            )
+
             documents = flatten_sections(sections, title)
-            if not documents:
-                raise HTTPException(
-                    status_code=422,
-                    detail="OCR produced no usable text.",
-                )
+
         else:
-            elements = merge_lines(extract_lines(str(file_path)))
-            documents, title = chunk_document(elements)     # ✅ 用统一入口
+
+            elements = merge_lines(
+                extract_lines(str(file_path))
+            )
+
+            documents, title = chunk_document(elements)
 
         # ----------------------------------------------------
         # 3. VALIDATION: reject empty / near-empty PDFs
@@ -232,7 +247,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         "title": title or "Untitled",
         "chunks": len(documents),
         "words": total_words,
-        "is_scanned": is_scanned,
+        "pdf_type": pdf_type,
         "filename": file.filename,
     }
 
