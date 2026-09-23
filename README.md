@@ -1,124 +1,73 @@
-# PDF-Based RAG Chatbot
+## Evaluation
 
-A RAG chatbot that answers questions based on the content of uploaded PDF documents.
+The RAG system includes a separate evaluation pipeline for measuring retrieval and answer quality using RAGAS.
 
-## Prerequisites
-
-- Python 3.12+
-- Ollama (with llama3:latest)
-- Docker (optional)
-
-## Features
-
-- 🔍 **Smart PDF Detection** – Automatically detects if a PDF is text-based or scanned
-- ⚡ **Fast Processing** – Uses PyMuPDF for text-based PDFs (fast)
-- 🧠 **OCR Support** – Uses PaddleOCR-VL-1.6 / PP-StructureV3 for scanned PDFs
-- 📊 **Hybrid Search** – Combines text search + semantic search for better retrieval
-- 🎯 **Reranking** – Uses BGE Reranker for improved result quality
-- 💬 **Local LLM** – Runs Llama 3 via Ollama for offline answer generation
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Backend Framework | FastAPI |
-| PDF Extraction (Text-based) | PyMuPDF (fitz) |
-| PDF Extraction (Scanned) | PaddleOCR-VL-1.6 / PP-StructureV3 |
-| Vector Database | ChromaDB |
-| Embeddings | Sentence Transformers (all-MiniLM-L6-v2) |
-| Reranker | BGE Reranker (BAAI/bge-reranker-v2-m3) |
-| LLM | Ollama + Llama 3 |
-| ASGI Server | Uvicorn |
-
-## RAG Pipeline
+### Evaluation Pipeline
 
 ```text
-Upload PDF
+Ground Truth Questions
     ↓
-Detect PDF type (Text-based vs Scanned)
+evaluate_rag.py
     ↓
-Extract PDF Content (PyMuPDF / PaddleOCR)
+RAG System
     ↓
-Detect Headings & Create Sections
+Retrieve Relevant Chunks
     ↓
-Split Content into Chunks
+Generate Answers
     ↓
-Generate Embeddings
+ragas_dataset.json
     ↓
-Store Chunks + Embeddings in ChromaDB
+evaluate_ragas.py
     ↓
-User Asks a Question
+RAGAS + Qwen
     ↓
-Hybrid Search (Text Search + Semantic Search)
+Faithfulness / Context Precision / Context Recall
     ↓
-Combine & Remove Duplicates
-    ↓
-BGE Reranker
-    ↓
-Retrieve Top Relevant Chunks
-    ↓
-Send Context + Question to LLM
-    ↓
-Generate Answer
+ragas_results.json
 ```
 
-## How to Run
+### Generate Evaluation Dataset
 
-### 1. Clone this repository
+`evaluate_rag.py` runs the RAG system against predefined questions and stores the generated answers and retrieved contexts.
 
 ```bash
-git clone https://github.com/stupidFLOWERch/PDF-RAG-System.git
-cd PDF-RAG-System
+python -m rag_ollama.evaluate_rag --pdf path/to/document.pdf
 ```
 
-### 2. Create and activate a virtual environment
+Supported options include:
 
-Create a Python virtual environment:
-```bash
-python -m venv .venv
-```
-Activate the virtual environment on Windows:
-```bash
-.venv\Scripts\activate
-```
+| Option                | Description                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| `--pdf`               | Path to the PDF document used for evaluation.                                            |
+| `--ground-truth`      | Path to the ground-truth JSON file containing evaluation questions and expected answers. |
+| `--output`            | Path where the generated RAGAS dataset will be saved.                                    |
+| `--collection`        | Name of the ChromaDB collection used to store document embeddings.                       |
+| `--persist-directory` | Directory where the ChromaDB data is stored.                                             |
+| `--top-k`             | Number of relevant chunks retrieved for each question.                                   |
+| `--skip-index`        | Skips rebuilding the vector index and uses the existing ChromaDB collection.             |
 
-### 3. Install dependencies
+### Run RAGAS Evaluation
 
-Install the required Python packages:
-```bash
-pip install -r requirements.txt
-```
+`evaluate_ragas.py` evaluates the generated dataset using RAGAS with **Qwen 2.5:7b model**.
 
-### 4. Run the server
+The evaluation uses the following metrics:
 
-Start the FastAPI server using Uvicorn:
+| Metric                | Explanation                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| Faithfulness    | Measures whether the generated answer is supported by the retrieved context.                         |
+| Context Precision | Measures whether the retrieved contexts are relevant to the question.                                |
+| Context Recall  | Measures whether the retrieved information contains the information required to answer the question. |
 
-```bash
-uvicorn src.backend.app:app --reload
-```
-
-### 5. Open the chatbot interface
-
-Open the following URL in your browser:
-
-http://localhost:8000/
-
-## Run with Docker
-
-### 1. Clone this repository
+Run:
 
 ```bash
-git clone https://github.com/stupidFLOWERch/PDF-RAG-System.git
-cd PDF-RAG-System
+python -m rag_ollama.evaluate_ragas
 ```
 
-### 2. Build and run with Docker Compose
-```bash
-docker compose up --build
-```
+The evaluation results are saved as a JSON file containing per-question scores and average scores.
 
-### 3. Open the chatbot interface
+### Evaluation vs Unit Testing
 
-Open the following URL in your browser:
+Unit tests verify individual functions and components, while RAGAS evaluates the quality of the complete RAG pipeline.
 
-http://localhost:8000/
+RAGAS evaluation is treated as a separate evaluation workflow rather than a regular unit test run on every code change.

@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env: 
+  PYTHONPATH: .
+
 jobs:
   test:
     runs-on: ubuntu-latest
