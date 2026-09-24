@@ -1,11 +1,12 @@
 import re
+
 import tiktoken
-from typing import List, Dict, Optional, Tuple
+
 from .pdf_loader import (
-    get_heading_score,
     calculate_document_avg_size,
     get_bold_ratio,
-    table_data_to_markdown
+    get_heading_score,
+    table_data_to_markdown,
 )
 
 
@@ -159,6 +160,7 @@ def fallback_chunk_elements(elements, title=None, max_tokens=256):
     """
 
     from langchain_text_splitters import RecursiveCharacterTextSplitter
+
     from .token_splitter import TokenTextSplitter
 
     # --------------------------------------------------
@@ -419,7 +421,7 @@ def find_title_from_candidates(heading_candidates):
             continue
         
         # Exclude headings containing email or contact information
-        if re.search(r'^(Email|Contact|Correspondence)', text, re.I):
+        if re.search(r'^(Email|Contact|Correspondence)', text, re.IGNORECASE):
             continue
 
         # Exclude author name formats
@@ -434,11 +436,11 @@ def find_title_from_candidates(heading_candidates):
             continue
         
         # Exclude Part, Chapter, and Section headings
-        if re.match(r'^(Part|Chapter|Section)\s+\w+', text, re.I):
+        if re.match(r'^(Part|Chapter|Section)\s+\w+', text, re.IGNORECASE):
             continue
         
         # Exclude common introductory and concluding headings
-        if re.match(r'^(Introduction|Conclusion)($|:)', text, re.I):
+        if re.match(r'^(Introduction|Conclusion)($|:)', text, re.IGNORECASE):
             continue
         
         # Require at least one uppercase letter
@@ -478,7 +480,7 @@ def is_toc_page(elements, page_num):
     ]
     
     for pattern in toc_patterns:
-        if re.search(pattern, text, re.I):
+        if re.search(pattern, text, re.IGNORECASE):
             return True
     
     return False
@@ -503,17 +505,20 @@ def is_toc_line(text):
         return True
     
     # Detect Part headings with dotted leaders and page numbers
-    if re.search(r'Part\s+\w+\s+\.{5,}\s*\d+', text, re.I):
-        return True
-    
-    return False
+    return bool(
+        re.search(
+            r'Part\s+\w+\s+\.{5,}\s*\d+',
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def is_table_heading(text):
     """
     Check whether a text line is a table caption.
     """
-    return bool(re.match(r'^Table\s+\d+[:.]', text.strip(), re.I))
+    return bool(re.match(r'^Table\s+\d+[:.]', text.strip(), re.IGNORECASE))
 
 
 def format_table_as_markdown(table_lines):
@@ -939,7 +944,7 @@ def create_sections(elements):
 
     return sections, document_title
 
-def format_table_rows(table_title: str, rows: List[str]) -> str:
+def format_table_rows(table_title: str, rows: list[str]) -> str:
     """
     Format table rows into Markdown table.
     Correctly handle cells with spaces (e.g. "Carbon paper, blue, 8.5x11").

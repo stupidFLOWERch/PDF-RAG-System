@@ -1,12 +1,12 @@
-import sys
 import os
+import sys
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-from pdf_loader import extract_lines, merge_lines
 from chunker import create_sections, flatten_sections
-from db import VectorDB, process_and_store, search_pdf
+from db import VectorDB
+from pdf_loader import extract_lines, merge_lines
 
 
 def main():

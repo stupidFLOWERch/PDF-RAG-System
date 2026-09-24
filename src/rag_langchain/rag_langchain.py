@@ -1,15 +1,16 @@
+import os
+import shutil
+
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_ollama import ChatOllama
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser  # ✅ Output parser
 from langchain_core.prompts import ChatPromptTemplate  # ✅ 1.0 standard
 from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser  # ✅ Output parser
+from langchain_ollama import ChatOllama
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-import os
-import shutil
 
 # ==========================================
 # ✅ Print chunk preview
@@ -32,7 +33,7 @@ def preview_chunks(chunks, max_show=5):
 class RAGLangChain:
     def __init__(
         self,
-        pdf_path: str = None,
+        pdf_path: str | None = None,
         persist_directory: str = "./chroma_db",
         collection_name: str = "plant-hunt-info",
         chunk_size: int = 700,

@@ -1,10 +1,10 @@
-import chromadb
 import re
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
 import uuid
-from typing import List, Dict, Optional
+
+import chromadb
+from chromadb.config import Settings
 from FlagEmbedding import FlagReranker
+from sentence_transformers import SentenceTransformer
 
 
 class VectorDB:
@@ -69,7 +69,7 @@ class VectorDB:
             self,
             text: str,
             is_query: bool = False
-        ) -> List[float]:
+        ) -> list[float]:
         """
         Generate an embedding vector for the input text.
 
@@ -85,7 +85,7 @@ class VectorDB:
 
     def add_documents(
         self,
-        documents: List[Dict]
+        documents: list[dict]
     ) -> int:
         """
         Add multiple documents to the vector database.
@@ -148,18 +148,18 @@ class VectorDB:
 
             return len(documents)
 
-        except Exception as e:
+        except Exception as e: 
             print(
                 f"❌ Error adding documents: {e}"
             )
-            return 0
+            raise
 
     def search(
         self,
         query: str,
         top_k: int = 20,
-        filter_metadata: Optional[Dict] = None
-    ) -> List[Dict]:
+        filter_metadata: dict | None = None
+    ) -> list[dict]:
         """
         Perform pure semantic/vector search.
 
@@ -205,7 +205,7 @@ class VectorDB:
         self,
         query: str,
         top_k: int = 20
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Perform text-based keyword search.
 
@@ -316,7 +316,7 @@ class VectorDB:
         query: str,
         top_k: int = 5,
         candidate_k: int = 20
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Hybrid retrieval using:
 
@@ -370,7 +370,7 @@ class VectorDB:
                 print(f"     matched_keywords: {r.get('matched_keywords')}")
                 break
         else:
-            print(f"  ❌ NOT in keyword results")
+            print("  ❌ NOT in keyword results")
 
         print(f"\n[Semantic search] {len(semantic_results)} results")
         for i, r in enumerate(semantic_results):
@@ -379,7 +379,7 @@ class VectorDB:
                 print(f"     distance: {r.get('distance'):.4f}")
                 break
         else:
-            print(f"  ❌ NOT in semantic results")
+            print("  ❌ NOT in semantic results")
             
         # ==========================================
         # 3. Combine
@@ -511,7 +511,7 @@ class VectorDB:
 
     def get_all_documents(
         self
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Retrieve all documents stored in the collection.
         """
@@ -546,7 +546,7 @@ class VectorDB:
 
     def get_stats(
         self
-    ) -> Dict:
+    ) -> dict:
         """
         Return database statistics.
         """
@@ -586,8 +586,8 @@ def process_and_store(
             VectorDB instance.
     """
 
-    from pdf_loader import extract_lines, merge_lines
     from chunker import create_sections, flatten_sections
+    from pdf_loader import extract_lines, merge_lines
 
     print(
         f"📄 Processing: {pdf_path}"

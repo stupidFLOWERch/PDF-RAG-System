@@ -20,27 +20,22 @@ Run:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
-import asyncio
 from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
-
+from openai import AsyncOpenAI
+from ragas.embeddings.base import BaseRagasEmbeddings
 from ragas.llms import llm_factory
-
 from ragas.metrics.collections import (
-    Faithfulness,
     ContextPrecision,
     ContextRecall,
+    Faithfulness,
 )
-
-from ragas.embeddings.base import BaseRagasEmbeddings
-
 from sentence_transformers import SentenceTransformer
-
-from openai import AsyncOpenAI
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EVALUATION_DIR = PROJECT_ROOT / "evaluation"
@@ -115,7 +110,7 @@ def load_dataset(
         data = json.load(file)
 
     if not isinstance(data, list):
-        raise ValueError(
+        raise TypeError(
             "ragas_dataset.json must contain "
             "a JSON array."
         )
@@ -367,7 +362,7 @@ def run_evaluation(
                     faithfulness_result.value
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(
                     f"⚠️ Faithfulness failed "
                     f"for question {index + 1}: {e}"
@@ -388,7 +383,7 @@ def run_evaluation(
                     context_precision_result.value
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(
                     f"⚠️ Context precision failed "
                     f"for question {index + 1}: {e}"
@@ -409,13 +404,13 @@ def run_evaluation(
                     context_recall_result.value
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(
                     f"⚠️ Context recall failed "
                     f"for question {index + 1}"
                 )
                 print(f"   Exception type: {type(e).__name__}")
-                print(f"   Exception: {repr(e)}")
+                print(f"   Exception: {e!r}")
 
             # ------------------------------------------
             # Store results

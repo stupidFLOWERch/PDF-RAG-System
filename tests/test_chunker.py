@@ -1,12 +1,12 @@
 from src.rag_ollama.chunker import (
     clean_html_tags,
-    is_table_heading,
+    fallback_chunk_elements,
     find_title_from_candidates,
-    is_toc_line,
+    flatten_sections,
     format_table_as_markdown,
     format_table_rows,
-    flatten_sections,
-    fallback_chunk_elements
+    is_table_heading,
+    is_toc_line,
 )
 
 

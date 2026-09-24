@@ -3,15 +3,16 @@ FastAPI Application for PDF RAG System
 Handles PDF upload, text extraction, and chat functionality.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import shutil
 import os
+import shutil
 import sys
-import pymupdf
 from pathlib import Path
+
+import pymupdf
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 # Project paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,9 +24,9 @@ FRONTEND_DIR = SRC_DIR / "frontend"
 sys.path.append(str(SRC_DIR))
 
 # Import RAG components
-from rag_ollama.pdf_loader import extract_lines, merge_lines
-from rag_ollama.chunker import flatten_sections, chunk_document
+from rag_ollama.chunker import chunk_document, flatten_sections
 from rag_ollama.db import VectorDB
+from rag_ollama.pdf_loader import extract_lines, merge_lines
 from rag_ollama.rag import RAG
 
 # Initialize FastAPI app
@@ -56,39 +57,37 @@ MIN_WORDS = 20
 
 def detect_pdf_type(pdf_path: str, text_threshold: int = 50) -> str:
     """
-    Detect whether a PDF is text-based, scanned, or empty.
+    Detect whether a PDF is text-based, scanned, empty, or corrupt.
 
     Returns:
         "text"    -> PDF has a usable text layer
         "scanned" -> little/no text but contains images
-        "empty"   -> little/no text and no images
+        "empty"   -> valid PDF with little/no text and no images
+        "corrupt" -> PDF cannot be opened or read successfully
     """
 
     try:
-        doc = pymupdf.open(pdf_path)
+        with pymupdf.open(pdf_path) as doc:
+            total_text = 0
+            total_images = 0
 
-        total_text = 0
-        total_images = 0
+            for page in doc:
+                text = page.get_text("text").strip()
+                total_text += len(text)
 
-        for page in doc:
-            text = page.get_text("text").strip()
-            total_text += len(text)
+                images = page.get_images(full=True)
+                total_images += len(images)
 
-            images = page.get_images(full=True)
-            total_images += len(images)
+            if total_text >= text_threshold:
+                return "text"
 
-        doc.close()
+            if total_images > 0:
+                return "scanned"
 
-        if total_text >= text_threshold:
-            return "text"
+            return "empty"
 
-        if total_images > 0:
-            return "scanned"
-
-        return "empty"
-
-    except Exception:
-        return "empty"
+    except Exception: # noqa: BLE001
+        return "corrupt"
 
 def validate_documents(documents: list) -> int:
     """
@@ -136,16 +135,17 @@ def home():
 
 
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...)):  # noqa: B008
     """
     Upload and process a PDF file.
 
-    - Detects if PDF is scanned or text-based
-    - Uses PyMuPDF for text-based PDFs (fast)
-    - Uses PaddleOCR for scanned PDFs (accurate but slower)
+    - Detects if PDF is scanned, text-based, empty, or corrupt
+    - Uses PyMuPDF for text-based PDFs
+    - Uses PaddleOCR for scanned PDFs
     - Stores chunks in vector database for retrieval
     - Rejects PDFs that produce zero usable chunks
     """
+
     # --------------------------------------------------------
     # 0. Basic validation
     # --------------------------------------------------------
@@ -161,28 +161,46 @@ async def upload_pdf(file: UploadFile = File(...)):
     # 1. Save uploaded file
     # --------------------------------------------------------
     try:
-        with open(file_path, "wb") as buffer:
+        # todo async file handling
+        with open(file_path, "wb") as buffer: # noqa: ASYNC230
             shutil.copyfileobj(file.file, buffer)
+
     except Exception as e:
+        print(f"❌ Failed to save uploaded file: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to save uploaded file: {e}",
-        )
+            detail="Failed to save uploaded file.",
+        ) from e
 
     # --------------------------------------------------------
-    # 2. Extract + chunk (DO NOT touch DB yet)
+    # 2. Detect PDF type
     # --------------------------------------------------------
     try:
         pdf_type = detect_pdf_type(str(file_path))
 
         print(f"🔍 PDF Type: {pdf_type}")
 
+        if pdf_type == "corrupt":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "The uploaded file is not a valid PDF "
+                    "or the PDF is corrupted."
+                ),
+            )
+
         if pdf_type == "empty":
             raise HTTPException(
                 status_code=422,
-                detail="The PDF appears to be empty or contains no readable content."
+                detail=(
+                    "The PDF appears to be empty "
+                    "or contains no readable content."
+                ),
             )
 
+        # ----------------------------------------------------
+        # 3. Extract + chunk
+        # ----------------------------------------------------
         if pdf_type == "scanned":
 
             from rag_ollama.paddle_loader import extract_with_paddle
@@ -196,6 +214,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             documents = flatten_sections(sections, title)
 
         else:
+            # pdf_type == "text"
 
             elements = merge_lines(
                 extract_lines(str(file_path))
@@ -204,42 +223,44 @@ async def upload_pdf(file: UploadFile = File(...)):
             documents, title = chunk_document(elements)
 
         # ----------------------------------------------------
-        # 3. VALIDATION: reject empty / near-empty PDFs
+        # 4. Validate extracted documents
         # ----------------------------------------------------
         total_words = validate_documents(documents)
 
     except HTTPException:
-        # Re-raise our own validation errors untouched
         raise
 
     except Exception as e:
+        print(f"❌ Failed to process PDF: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process PDF: {e}",
-        )
+            detail="Failed to process PDF.",
+        ) from e
 
     # --------------------------------------------------------
-    # 4. Only NOW clear the DB and store the new documents.
-    #    (So a bad upload doesn't wipe your existing data.)
+    # 5. Only NOW clear the DB and store the new documents.
+    #    A bad upload won't wipe existing data.
     # --------------------------------------------------------
     try:
         db = VectorDB(
             collection_name="documents",
             persist_directory=str(PROJECT_ROOT / "chroma_db"),
         )
+
         db.clear()
 
-        # db.clear() may replace the collection object — re-add docs
+        # db.clear() may replace the collection object
         db.add_documents(documents)
 
     except Exception as e:
+        print(f"❌ Failed to store documents in vector DB: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to store documents in vector DB: {e}",
-        )
+            detail="Failed to store documents in vector DB.",
+        ) from e
 
     # --------------------------------------------------------
-    # 5. Success
+    # 6. Success
     # --------------------------------------------------------
     return {
         "status": "success",
@@ -250,8 +271,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         "pdf_type": pdf_type,
         "filename": file.filename,
     }
-
-
+    
 @app.post("/chat")
 async def chat(data: dict):
     """

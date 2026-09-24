@@ -1,10 +1,10 @@
 import json
-import pytest
 
 from src.rag_ollama.evaluate_ragas import (
     prepare_dataset,
     save_results,
 )
+
 
 def test_prepare_dataset():
     records = [

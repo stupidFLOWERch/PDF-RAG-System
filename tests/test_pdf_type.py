@@ -1,7 +1,8 @@
 import pymupdf
+from PIL import Image
 
 from src.backend.app import detect_pdf_type
-from PIL import Image
+
 
 def test_empty_pdf_is_detected_as_empty(tmp_path):
     """
@@ -61,3 +62,12 @@ def test_text_pdf_is_detected_as_text(tmp_path):
     doc.close() 
     result = detect_pdf_type(str(pdf_path)) 
     assert result == "text"
+
+def test_corrupt_pdf_is_detected(tmp_path):
+    pdf_path = tmp_path / "corrupt.pdf"
+
+    pdf_path.write_bytes(b"this is not a valid pdf")
+
+    result = detect_pdf_type(str(pdf_path))
+
+    assert result == "corrupt"

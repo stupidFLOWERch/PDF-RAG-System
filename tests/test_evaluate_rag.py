@@ -1,10 +1,12 @@
 import json
+
 import pytest
 
 from src.rag_ollama.evaluate_rag import (
     load_questions,
     make_ragas_record,
 )
+
 
 def test_load_questions_accepts_json_array(tmp_path):
     path = tmp_path / "ground_truth.json"

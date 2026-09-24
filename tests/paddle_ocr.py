@@ -10,24 +10,20 @@ os.environ["FLAGS_use_mkldnn"] = "0"
 os.environ["FLAGS_use_onednn"] = "0"
 
 import json
+
 import numpy as np
-from typing import List, Dict
 
 # Import PaddleOCR loader
-from src.rag_ollama.paddle_loader import PaddleDocLoader, extract_with_paddle
+from src.rag_ollama.paddle_loader import extract_with_paddle
 
 
 def convert_numpy(obj):
     """Convert numpy types to Python native types for JSON serialization."""
     if isinstance(obj, np.ndarray):
         return obj.tolist()
-    elif isinstance(obj, np.float32):
+    elif isinstance(obj, (np.float32, np.float64)):
         return float(obj)
-    elif isinstance(obj, np.float64):
-        return float(obj)
-    elif isinstance(obj, np.int32):
-        return int(obj)
-    elif isinstance(obj, np.int64):
+    elif isinstance(obj, (np.float32, np.float64)):
         return int(obj)
     elif isinstance(obj, dict):
         return {k: convert_numpy(v) for k, v in obj.items()}
@@ -36,7 +32,7 @@ def convert_numpy(obj):
     return obj
 
 
-def print_results(elements: List[Dict], sections: List[Dict], document_title: str):
+def print_results(elements: list[dict], sections: list[dict], document_title: str):
     """Print extraction results in a readable format."""
     print("\n" + "=" * 80)
     print("EXTRACTION RESULTS")
@@ -47,10 +43,10 @@ def print_results(elements: List[Dict], sections: List[Dict], document_title: st
     for elem in elements:
         type_counts[elem['type']] = type_counts.get(elem['type'], 0) + 1
     
-    print(f"\nStatistics:")
+    print("\nStatistics:")
     print(f"  Total elements: {len(elements)}")
     print(f"  Total sections: {len(sections)}")
-    print(f"  Element type distribution:")
+    print("  Element type distribution:")
     for elem_type, count in sorted(type_counts.items()):
         print(f"    - {elem_type}: {count}")
     
@@ -73,7 +69,7 @@ def print_results(elements: List[Dict], sections: List[Dict], document_title: st
         print(f"  Content preview: {content_preview}{'...' if len(content_preview) > 100 else ''}")
     
     # Element details
-    print(f"\n\nElement Details (first 20):")
+    print("\n\nElement Details (first 20):")
     print("-" * 80)
     print(f"  {'#':3} | {'Page':4} | {'Type':22} | {'Text':50}")
     print("-" * 80)
@@ -108,7 +104,7 @@ def main():
     try:
         # use_vl=True for VL-1.6, use_vl=False for PP-StructureV3
         sections, document_title = extract_with_paddle(pdf_path, use_gpu=False, use_vl=True)
-    except Exception as e:
+    except Exception as e: # noqa: BLE001
         print(f"VL extraction failed: {e}")
         print("Falling back to PP-StructureV3...")
         sections, document_title = extract_with_paddle(pdf_path, use_gpu=False, use_vl=False)
@@ -149,7 +145,7 @@ def main():
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_data, f, ensure_ascii=False, indent=2)
         print(f"\nResults saved to: {output_file}")
-    except Exception as e:
+    except Exception as e: # noqa: BLE001
         print(f"Save JSON failed: {e}")
     
     print("\n" + "=" * 80)

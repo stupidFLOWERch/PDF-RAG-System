@@ -7,8 +7,6 @@ HTML/table cleaning is handled by the chunker.
 
 import os
 import re
-from typing import List, Dict, Tuple
-
 
 # Disable OneDNN (avoids compatibility issues on Windows)
 os.environ["FLAGS_use_mkldnn"] = "0"
@@ -240,7 +238,7 @@ class PaddleDocLoader:
 
                     return
 
-                except Exception as e:
+                except Exception as e: # noqa: BLE001
 
                     print(
                         f"   ⚠️ VL init attempt failed: {e}"
@@ -273,7 +271,7 @@ class PaddleDocLoader:
 
             self._init_structure_parser()
 
-        except Exception as e:
+        except Exception as e: # noqa: BLE001
 
             print(
                 f"   ❌ VL initialization failed: {e}"
@@ -314,7 +312,6 @@ class PaddleDocLoader:
             ]
 
             for init_func in init_methods:
-
                 try:
                     self.parser = init_func()
 
@@ -324,7 +321,10 @@ class PaddleDocLoader:
 
                     return
 
-                except Exception:
+                except Exception as exc: # noqa: BLE001
+                    print(
+                        f"   ⚠️ PP-StructureV3 init attempt failed: {exc}"
+                    )
                     continue
 
             raise RuntimeError(
@@ -346,7 +346,7 @@ class PaddleDocLoader:
     def extract_structure(
         self,
         pdf_path: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Extract document structure from PDF.
 
@@ -375,7 +375,7 @@ class PaddleDocLoader:
     def _extract_with_vl(
         self,
         pdf_path: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Extract using PaddleOCR-VL.
 
@@ -407,7 +407,7 @@ class PaddleDocLoader:
                 self.parser.predict(pdf_path)
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
 
             print(
                 f"   ❌ VL prediction failed: {e}"
@@ -496,7 +496,7 @@ class PaddleDocLoader:
                         f"from page {page_num}"
                     )
 
-            except Exception as e:
+            except Exception as e: # noqa: BLE001
 
                 print(
                     f"   ❌ VL extract error "
@@ -517,7 +517,7 @@ class PaddleDocLoader:
     def _extract_with_structure(
         self,
         pdf_path: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Extract using PP-StructureV3.
 
@@ -534,7 +534,7 @@ class PaddleDocLoader:
                 self.parser.predict(pdf_path)
             )
 
-        except Exception as e:
+        except Exception as e: # noqa: BLE001
 
             print(
                 f"   ❌ Structure prediction failed: {e}"
@@ -743,7 +743,7 @@ class PaddleDocLoader:
         self,
         md_text: str,
         page_num: int = 1
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Parse PaddleOCR-VL Markdown into
         structured elements.
@@ -868,7 +868,7 @@ class PaddleDocLoader:
     def create_sections(
         self,
         pdf_path: str
-    ) -> Tuple[List[Dict], str]:
+    ) -> tuple[list[dict], str]:
         """
         Group extracted elements into sections
         based on document headings.
@@ -974,7 +974,7 @@ def extract_with_paddle(
     pdf_path: str,
     use_gpu: bool = False,
     use_vl: bool = True
-) -> Tuple[List[Dict], str]:
+) -> tuple[list[dict], str]:
     """
     Convenience function for extracting
     sections from a scanned PDF.

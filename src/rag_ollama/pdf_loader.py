@@ -1,6 +1,6 @@
-import pymupdf
 import re
 
+import pymupdf
 
 # ============================================================
 # Text Cleaning
@@ -144,7 +144,7 @@ def extract_table_data(table):
 
     try:
         raw_data = table.extract()
-    except Exception as exc:
+    except Exception as exc: # noqa: BLE001
         print(f"⚠️ Failed to extract table data: {exc}")
         return []
 
@@ -327,7 +327,7 @@ def extract_lines(pdf_path, table_overlap_threshold=0.5):
                 print(f"   bbox: {table.bbox}")
                 print(f"   data: {table_data}")
 
-            except Exception as e:
+            except Exception as e: # noqa: BLE001
                 print(
                     f"⚠️ Failed to extract table {table_id}: {e}"
                 )
@@ -742,7 +742,7 @@ def get_heading_score(
     if re.search(
         r"^ISO/IEC\s+\d{4,5}:\d{4}\s*\(E\)(?:\s+.*)?$",
         text,
-        re.I
+        re.IGNORECASE
     ):
         return 0
 
@@ -755,7 +755,7 @@ def get_heading_score(
         or re.search(
             r"\.(com|edu|my|org|net|gov)\b",
             text,
-            re.I
+            re.IGNORECASE
         )
     ):
         return 0
@@ -767,7 +767,7 @@ def get_heading_score(
     if re.search(
         r"https?://|www\.",
         text,
-        re.I
+        re.IGNORECASE
     ):
         return 0
 
@@ -798,7 +798,7 @@ def get_heading_score(
     if re.search(
         r"\b(also|commonly|scientifically)\s+known\s+as\b",
         text,
-        re.I
+        re.IGNORECASE
     ):
         return 0
 
@@ -817,14 +817,15 @@ def get_heading_score(
 
             first_part = parts[0].strip()
 
-            if len(first_part.split()) <= 3:
-
-                if not re.match(
+            if (
+                len(first_part.split()) <= 3
+                and not re.match(
                     r"^(Part|Chapter|Section)\s+\w+",
                     first_part,
-                    re.I
-                ):
-                    return 0
+                    re.IGNORECASE,
+                )
+            ):
+                return 0
 
     # --------------------------------------------------------
     # Exclude very long text
@@ -886,7 +887,7 @@ def get_heading_score(
     if re.search(
         research_verbs,
         text,
-        re.I
+        re.IGNORECASE
     ):
         score -= 3
 
@@ -894,17 +895,15 @@ def get_heading_score(
     if re.match(
         r"^(This|The|These|Those)\s+",
         text,
-        re.I
+        re.IGNORECASE,
+    ) and re.search(
+        r"\b(is|are|was|were|has|have|"
+        r"includes|contains|represents|"
+        r"provides|offers|presents)\b",
+        text,
+        re.IGNORECASE,
     ):
-
-        if re.search(
-            r"\b(is|are|was|were|has|have|"
-            r"includes|contains|represents|"
-            r"provides|offers|presents)\b",
-            text,
-            re.I
-        ):
-            score -= 2
+        score -= 2
 
     # Transition words
     if re.match(
@@ -914,7 +913,7 @@ def get_heading_score(
         r"Subsequently|Hence|Accordingly|"
         r"In addition|In contrast|On the other hand)",
         text,
-        re.I
+        re.IGNORECASE
     ):
         score -= 2
 
@@ -931,7 +930,7 @@ def get_heading_score(
         r"^(This study|The app|The application|"
         r"The paper|This paper|Our study)",
         text,
-        re.I
+        re.IGNORECASE
     ):
         score -= 2
 
@@ -967,7 +966,7 @@ def get_heading_score(
     if re.match(
         r"^(Part|Chapter|Section)\s+\w+",
         text,
-        re.I
+        re.IGNORECASE
     ):
 
         score += 4
@@ -1023,17 +1022,16 @@ def get_heading_score(
         score += 1
 
     # Complete standalone line
-    if is_line_complete(
-        element,
-        next_element,
-        document_avg_size
+    if (
+        is_line_complete(
+            element,
+            next_element,
+            document_avg_size,
+        )
+        and not text.endswith(".")
+        and not text.endswith(":")
     ):
-
-        if (
-            not text.endswith(".")
-            and not text.endswith(":")
-        ):
-            score += 1
+        score += 1
 
     # Short text
     word_count = len(text.split())

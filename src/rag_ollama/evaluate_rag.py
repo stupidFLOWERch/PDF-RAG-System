@@ -14,9 +14,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+import chromadb
+
+from .chunker import create_sections, flatten_sections
+from .db import VectorDB
 from .pdf_loader import extract_lines, merge_lines
-from .chunker import create_sections, flatten_sections, chunk_document
-from .db import VectorDB  
 from .rag import RAG
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +48,7 @@ def load_questions(path: Path) -> list[dict[str, Any]]:
         records = None
 
     if not isinstance(records, list):
-        raise ValueError(
+        raise TypeError(
             "ground_truth.json must be a JSON array, or contain a data/questions/items array."
         )
 
@@ -69,8 +71,8 @@ def build_index(pdf_path: Path, collection_name: str, persist_directory: str) ->
     try:
         db.delete_collection()
         print(f"Deleted existing collection: {collection_name}")
-    except Exception:
-        pass
+    except chromadb.errors.NotFoundError:
+        print(f"Collection does not exist: {collection_name}")
 
     # Re-create the database
     db = VectorDB(

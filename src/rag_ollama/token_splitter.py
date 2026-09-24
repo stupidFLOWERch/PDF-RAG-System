@@ -1,8 +1,7 @@
-from langchain_core.documents import Document as LCDocument
-from  langchain_text_splitters import TextSplitter
 
-from typing import List
 import tiktoken
+from langchain_text_splitters import TextSplitter
+
 
 class TokenTextSplitter(TextSplitter):
     """
@@ -29,7 +28,7 @@ class TokenTextSplitter(TextSplitter):
         if chunk_overlap > chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
 
-    def split_text(self, text: str) -> List[str]:
+    def split_text(self, text: str) -> list[str]:
         token_ids = self.encoder.encode(text)
 
         if len(token_ids) < self.chunk_size:
