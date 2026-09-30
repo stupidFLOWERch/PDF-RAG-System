@@ -57,7 +57,7 @@ jobs:
             -o pdf-rag-system.tar
       
       - name: Upload Docker image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: pdf-rag-image
           path: pdf-rag-system.tar
