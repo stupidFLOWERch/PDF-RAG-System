@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+
   pull_request:
+    branches:
+      - main
 
 env: 
   PYTHONPATH: .
@@ -28,3 +33,32 @@ jobs:
 
       - name: Run Ruff
         run: ruff check .
+      
+      - name: Build Docker image
+        run: |
+          docker build -t pdf-rag-system:${{ github.sha }} .
+
+      - name: Run Docker container
+        run: |
+          docker run -d \
+            --name pdf-rag-test \
+            -p 8000:8000 \
+            pdf-rag-system:${{ github.sha }}
+
+          sleep 10
+
+          curl --fail http://localhost:8000/health
+
+          docker stop pdf-rag-test
+
+      - name: Save Docker image
+        run: |
+          docker save pdf-rag-system:${{ github.sha }} \
+            -o pdf-rag-system.tar
+      
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-rag-image
+          path: pdf-rag-system.tar
+          retention-days: 1

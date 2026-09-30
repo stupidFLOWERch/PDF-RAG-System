@@ -351,10 +351,12 @@ def extract_lines(pdf_path, table_overlap_threshold=0.5):
                 if not spans:
                     continue
 
-                full_text = "".join(
-                    span.get("text", "")
-                    for span in spans
-                ).strip()
+                full_text = clean_text(
+                    "".join(
+                        span.get("text", "")
+                        for span in spans
+                    )
+                )
 
                 if not full_text:
                     continue
@@ -704,22 +706,22 @@ def get_heading_score(
     document_avg_size,
 ):
     """
-    Compute a heuristic score indicating how likely a text
-    element is to be a heading.
+    Compute a heuristic score indicating how likely
+    a text element is to be a heading.
 
-    Tables are explicitly excluded.
+    Higher scores indicate a higher probability.
+    Tables are explicitly excluded with a score of -999.
     """
 
-    # --------------------------------------------------------
-    # IMPORTANT: Table can NEVER be a heading
-    # --------------------------------------------------------
+    # ============================================================
+    # Table exclusion
+    # ============================================================
 
     if element.get("is_table", False):
         return -999
 
     score = 0
-
-    text = element["text"].strip()
+    text = element.get("text", "").strip()
 
     if not text:
         return 0
@@ -730,231 +732,274 @@ def get_heading_score(
         return 0
 
     avg_size = sum(sizes) / len(sizes)
-
     bold_ratio = get_bold_ratio(element)
-
     word_count = len(text.split())
 
-    # --------------------------------------------------------
-    # Exclude ISO / IEC identifiers
-    # --------------------------------------------------------
+    # ============================================================
+    # Hard exclusion rules
+    # These elements should NOT be considered headings.
+    # ============================================================
 
-    if re.search(
-        r"^ISO/IEC\s+\d{4,5}:\d{4}\s*\(E\)(?:\s+.*)?$",
-        text,
-        re.IGNORECASE
+    # ------------------------------------------------------------
+    # Exclude ISO document metadata
+    # ------------------------------------------------------------
+
+    iso_metadata_patterns = (
+        r"^INTERNATIONAL\s+STANDARD$",
+        r"^ISO/IEC$",
+        r"^ISO$",
+        r"^IEC$",
+        r"^COPYRIGHT\s+PROTECTED\s+DOCUMENT$",
+        r"^(FIRST|SECOND|THIRD|FOURTH)\s+EDITION$",
+        r"^REFERENCE\s+NUMBER\b",
+        r"^ISO/IEC\s+\d{4,5}$",
+    )
+
+    if any(
+        re.search(pattern, text, re.I)
+        for pattern in iso_metadata_patterns
     ):
         return 0
 
-    # --------------------------------------------------------
-    # Exclude emails / domains
-    # --------------------------------------------------------
+    # Complete ISO/IEC standard identifier
+    if re.search(
+        r"^ISO/IEC\s+\d{4,5}:\d{4}\s*\(E\)(?:\s+.*)?$",
+        text,
+        re.I,
+    ):
+        return 0
+
+    # ------------------------------------------------------------
+    # Exclude lead-in sentences
+    # These are usually introductory sentences before
+    # bullet/list items rather than headings.
+    # ------------------------------------------------------------
+
+    lead_in_patterns = (
+        r"^(The|This|These|Those|It|They|We|Users?|"
+        r"Organizations?|The organization)\s+"
+    )
+
+    if (
+        text.endswith(":")
+        and re.match(lead_in_patterns, text, re.I)
+        and word_count >= 3
+    ):
+        return 0
+        
+    # ------------------------------------------------------------
+    # Exclude email addresses and common domain names
+    # ------------------------------------------------------------
 
     if (
         "@" in text
         or re.search(
             r"\.(com|edu|my|org|net|gov)\b",
             text,
-            re.IGNORECASE
+            re.I,
         )
     ):
         return 0
 
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # Exclude URLs
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
 
-    if re.search(
-        r"https?://|www\.",
-        text,
-        re.IGNORECASE
-    ):
+    if re.search(r"https?://|www\.", text, re.I):
         return 0
 
-    # --------------------------------------------------------
-    # Exclude numbers only
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # Exclude text containing only numbers and periods
+    # ------------------------------------------------------------
 
-    if re.match(
-        r"^[\d\.]+$",
-        text
-    ):
+    if re.match(r"^[\d.]+$", text):
         return 0
 
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # Exclude bullet list items
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
 
-    if re.match(
-        r"^\s*[•\-]\s+",
-        text
-    ):
+    if re.match(r"^\s*[•\-]\s+", text):
         return 0
 
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # Exclude descriptive body text
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
 
     if re.search(
         r"\b(also|commonly|scientifically)\s+known\s+as\b",
         text,
-        re.IGNORECASE
+        re.I,
     ):
         return 0
 
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # Exclude list-style text separated by hyphens
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
 
     if " - " in text or " – " in text:
-
-        parts = re.split(
-            r"\s*[-–—]\s*",
-            text
-        )
+        parts = re.split(r"\s*[-–—]\s*", text)
 
         if len(parts) >= 2:
-
             first_part = parts[0].strip()
 
-            if (
-                len(first_part.split()) <= 3
-                and not re.match(
+            # Ignore short list-style items
+            # except Part / Chapter / Section headings
+            if len(first_part.split()) <= 3:
+                if not re.match(
                     r"^(Part|Chapter|Section)\s+\w+",
                     first_part,
-                    re.IGNORECASE,
-                )
-            ):
-                return 0
+                    re.I,
+                ):
+                    return 0
 
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # Exclude very long text
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
 
     if len(text) > 120:
-
         has_title_features = (
-            ":"
-            in text
+            ":" in text
             or (
                 text[0].isupper()
-                and len(text.split()) <= 15
+                and word_count <= 15
             )
         )
 
         if not has_title_features:
             return 0
 
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
     # Exclude complete sentences
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
 
     if text.endswith(".") and len(text) > 30:
-
         has_title_features = (
-            ":"
-            in text
+            ":" in text
             or (
                 text[0].isupper()
-                and len(text.split()) <= 12
+                and word_count <= 12
             )
         )
 
         if not has_title_features:
             return 0
 
-    # --------------------------------------------------------
-    # Exclude long questions
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # Exclude questions
+    # ------------------------------------------------------------
 
-    if "?" in text and len(text) > 30:
+    if "?" in text:
         return 0
 
-    # ========================================================
+    # ============================================================
     # Deduction rules
-    # ========================================================
+    # These reduce the score without immediately excluding
+    # the element.
+    # ============================================================
+
+    # ------------------------------------------------------------
+    # 1. Research-related verbs
+    # ------------------------------------------------------------
 
     research_verbs = (
-        r"\b(showed|demonstrated|found|revealed|"
-        r"indicated|suggests|highlights|emphasizes|"
-        r"illustrates|introduces|presents|proposes|"
-        r"provides|shows|discusses|explores|"
-        r"investigates|examines|describes|reports|"
-        r"identifies|argues|claims|states|notes|"
-        r"observes)\b"
+        r"\b(showed|demonstrated|found|revealed|indicated|suggests|"
+        r"highlights|emphasizes|illustrates|introduces|presents|"
+        r"proposes|provides|shows|discusses|explores|investigates|"
+        r"examines|describes|reports|identifies|argues|claims|"
+        r"states|notes|observes)\b"
     )
 
-    if re.search(
-        research_verbs,
-        text,
-        re.IGNORECASE
-    ):
+    if re.search(research_verbs, text, re.I):
         score -= 3
 
-    # Starts with This / The / These / Those
+    # ------------------------------------------------------------
+    # 2. Body-like sentences starting with This / The / These...
+    # ------------------------------------------------------------
+
     if re.match(
         r"^(This|The|These|Those)\s+",
         text,
-        re.IGNORECASE,
-    ) and re.search(
-        r"\b(is|are|was|were|has|have|"
-        r"includes|contains|represents|"
-        r"provides|offers|presents)\b",
-        text,
-        re.IGNORECASE,
+        re.I,
     ):
-        score -= 2
+        if re.search(
+            r"\b(is|are|was|were|has|have|includes|contains|"
+            r"represents|provides|offers|presents)\b",
+            text,
+            re.I,
+        ):
+            score -= 2
 
-    # Transition words
+    # ------------------------------------------------------------
+    # 3. Transition words
+    # ------------------------------------------------------------
+
     if re.match(
-        r"^(However|Therefore|Thus|Moreover|"
-        r"Furthermore|Additionally|Consequently|"
-        r"Nevertheless|Nonetheless|Meanwhile|"
-        r"Subsequently|Hence|Accordingly|"
-        r"In addition|In contrast|On the other hand)",
+        r"^(However|Therefore|Thus|Moreover|Furthermore|"
+        r"Additionally|Consequently|Nevertheless|Nonetheless|"
+        r"Meanwhile|Subsequently|Hence|Accordingly|"
+        r"In addition|In contrast|On the other hand)\b",
         text,
-        re.IGNORECASE
+        re.I,
     ):
         score -= 2
 
-    # Ending period
+    # ------------------------------------------------------------
+    # 4. Lines ending with a period
+    # ------------------------------------------------------------
+
     if text.endswith("."):
         score -= 1
 
-    # More than 18 words
+    # ------------------------------------------------------------
+    # 5. Long text without a colon
+    # ------------------------------------------------------------
+
     if word_count > 18 and ":" not in text:
         score -= 1
 
-    # Abstract-style content
+    # ------------------------------------------------------------
+    # 6. Abstract-style content
+    # ------------------------------------------------------------
+
     if re.match(
-        r"^(This study|The app|The application|"
-        r"The paper|This paper|Our study)",
+        r"^(This study|The app|The application|The paper|"
+        r"This paper|Our study)\b",
         text,
-        re.IGNORECASE
+        re.I,
     ):
         score -= 2
 
-    # Smaller than document average
+    # ------------------------------------------------------------
+    # 7. Smaller than document average
+    # ------------------------------------------------------------
+
     if (
         document_avg_size > 0
         and avg_size < document_avg_size * 0.9
     ):
         score -= 1
 
-    # Non-bold text with more than 8 words
+    # ------------------------------------------------------------
+    # 8. Non-bold text with more than 8 words
+    # ------------------------------------------------------------
+
     if bold_ratio < 0.3 and word_count > 8:
         score -= 1
 
-    # ========================================================
+    # ============================================================
     # Heading scoring rules
-    # ========================================================
+    # ============================================================
 
+    # ------------------------------------------------------------
     # Numbered headings
-    if re.match(
-        r"^\d+(\.\d+)*\.?\s+",
-        text
-    ):
+    # Examples:
+    # 1 Introduction
+    # 1.1 Background
+    # 2.3.1 System Architecture
+    # ------------------------------------------------------------
 
+    if re.match(r"^\d+(\.\d+)*\.?\s+", text):
         score += 4
 
         if "(" in text and ")" in text:
@@ -962,13 +1007,15 @@ def get_heading_score(
 
         return score
 
-    # Part / Chapter / Section
+    # ------------------------------------------------------------
+    # Part / Chapter / Section headings
+    # ------------------------------------------------------------
+
     if re.match(
         r"^(Part|Chapter|Section)\s+\w+",
         text,
-        re.IGNORECASE
+        re.I,
     ):
-
         score += 4
 
         if ":" in text:
@@ -979,65 +1026,71 @@ def get_heading_score(
 
         return score
 
-    # Fully uppercase
+    # ------------------------------------------------------------
+    # Fully uppercase headings
+    # ------------------------------------------------------------
+
     if text.isupper() and len(text) > 3:
         score += 3
 
-    # Short title style
-    if text and text[0].isupper():
+    # ------------------------------------------------------------
+    # Short title-style text
+    # ------------------------------------------------------------
 
-        word_count = len(text.split())
-
+    if text[0].isupper():
         if word_count <= 15 and not text.endswith("."):
-
             score += 2
 
+            # Colon bonus
             if ":" in text:
                 score += 1
 
+            # Title beginning with The / A / An
             if re.match(
                 r"^(The|A|An)\s+",
-                text
+                text,
+                re.I,
             ):
                 score += 1
 
-    # Larger font
-    if (
-        document_avg_size > 0
-        and avg_size > document_avg_size * 1.3
-    ):
-        score += 3
+    # ------------------------------------------------------------
+    # Larger font size
+    # ------------------------------------------------------------
 
-    elif (
-        document_avg_size > 0
-        and avg_size > document_avg_size * 1.1
-    ):
-        score += 1
+    if document_avg_size > 0:
+        if avg_size > document_avg_size * 1.3:
+            score += 3
 
-    # Bold
+        elif avg_size > document_avg_size * 1.1:
+            score += 1
+
+    # ------------------------------------------------------------
+    # Bold font
+    # ------------------------------------------------------------
+
     if bold_ratio >= 0.9:
         score += 2
 
     elif bold_ratio >= 0.7:
         score += 1
 
+    # ------------------------------------------------------------
     # Complete standalone line
-    if (
-        is_line_complete(
-            element,
-            next_element,
-            document_avg_size,
-        )
-        and not text.endswith(".")
-        and not text.endswith(":")
-    ):
-        score += 1
+    # ------------------------------------------------------------
 
-    # Short text
-    word_count = len(text.split())
+    if is_line_complete(
+        element,
+        next_element,
+        document_avg_size,
+    ):
+        if not text.endswith(".") and not text.endswith(":"):
+            score += 1
+
+    # ------------------------------------------------------------
+    # Bonus for short text
+    # ------------------------------------------------------------
 
     if 2 <= word_count <= 12:
         score += 1
 
     return score
-
