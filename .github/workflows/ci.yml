@@ -15,7 +15,11 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    
+    permissions:
+      contents: read
+      packages: write
+      
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,14 +40,16 @@ jobs:
       
       - name: Build Docker image
         run: |
-          docker build -t pdf-rag-system:${{ github.sha }} .
+          docker build \
+            -t ghcr.io/${{ github.repository }}:${{ github.sha }} \
+            .
 
       - name: Run Docker container
         run: |
           docker run -d \
             --name pdf-rag-test \
             -p 8000:8000 \
-            pdf-rag-system:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
 
           sleep 10
 
@@ -51,14 +57,13 @@ jobs:
 
           docker stop pdf-rag-test
 
-      - name: Save Docker image
-        run: |
-          docker save pdf-rag-system:${{ github.sha }} \
-            -o pdf-rag-system.tar
-      
-      - name: Upload Docker image
-        uses: actions/upload-artifact@v5
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          name: pdf-rag-image
-          path: pdf-rag-system.tar
-          retention-days: 1
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
