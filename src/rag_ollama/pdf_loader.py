@@ -756,7 +756,7 @@ def get_heading_score(
     )
 
     if any(
-        re.search(pattern, text, re.I)
+        re.search(pattern, text, re.IGNORECASE)
         for pattern in iso_metadata_patterns
     ):
         return 0
@@ -765,7 +765,7 @@ def get_heading_score(
     if re.search(
         r"^ISO/IEC\s+\d{4,5}:\d{4}\s*\(E\)(?:\s+.*)?$",
         text,
-        re.I,
+        re.IGNORECASE,
     ):
         return 0
 
@@ -782,7 +782,7 @@ def get_heading_score(
 
     if (
         text.endswith(":")
-        and re.match(lead_in_patterns, text, re.I)
+        and re.match(lead_in_patterns, text, re.IGNORECASE)
         and word_count >= 3
     ):
         return 0
@@ -796,7 +796,7 @@ def get_heading_score(
         or re.search(
             r"\.(com|edu|my|org|net|gov)\b",
             text,
-            re.I,
+            re.IGNORECASE,
         )
     ):
         return 0
@@ -805,7 +805,7 @@ def get_heading_score(
     # Exclude URLs
     # ------------------------------------------------------------
 
-    if re.search(r"https?://|www\.", text, re.I):
+    if re.search(r"https?://|www\.", text, re.IGNORECASE):
         return 0
 
     # ------------------------------------------------------------
@@ -829,7 +829,7 @@ def get_heading_score(
     if re.search(
         r"\b(also|commonly|scientifically)\s+known\s+as\b",
         text,
-        re.I,
+        re.IGNORECASE,
     ):
         return 0
 
@@ -845,13 +845,12 @@ def get_heading_score(
 
             # Ignore short list-style items
             # except Part / Chapter / Section headings
-            if len(first_part.split()) <= 3:
-                if not re.match(
-                    r"^(Part|Chapter|Section)\s+\w+",
-                    first_part,
-                    re.I,
-                ):
-                    return 0
+            if len(first_part.split()) <= 3 and not re.match(
+                r"^(Part|Chapter|Section)\s+\w+",
+                first_part,
+                re.IGNORECASE,
+            ):
+                return 0
 
     # ------------------------------------------------------------
     # Exclude very long text
@@ -910,7 +909,7 @@ def get_heading_score(
         r"states|notes|observes)\b"
     )
 
-    if re.search(research_verbs, text, re.I):
+    if re.search(research_verbs, text, re.IGNORECASE):
         score -= 3
 
     # ------------------------------------------------------------
@@ -920,15 +919,14 @@ def get_heading_score(
     if re.match(
         r"^(This|The|These|Those)\s+",
         text,
-        re.I,
-    ):
-        if re.search(
+        re.IGNORECASE,
+    ) and re.search(
             r"\b(is|are|was|were|has|have|includes|contains|"
             r"represents|provides|offers|presents)\b",
             text,
-            re.I,
+            re.IGNORECASE,
         ):
-            score -= 2
+        score -= 2
 
     # ------------------------------------------------------------
     # 3. Transition words
@@ -940,7 +938,7 @@ def get_heading_score(
         r"Meanwhile|Subsequently|Hence|Accordingly|"
         r"In addition|In contrast|On the other hand)\b",
         text,
-        re.I,
+        re.IGNORECASE,
     ):
         score -= 2
 
@@ -966,7 +964,7 @@ def get_heading_score(
         r"^(This study|The app|The application|The paper|"
         r"This paper|Our study)\b",
         text,
-        re.I,
+        re.IGNORECASE,
     ):
         score -= 2
 
@@ -1014,7 +1012,7 @@ def get_heading_score(
     if re.match(
         r"^(Part|Chapter|Section)\s+\w+",
         text,
-        re.I,
+        re.IGNORECASE,
     ):
         score += 4
 
@@ -1037,21 +1035,20 @@ def get_heading_score(
     # Short title-style text
     # ------------------------------------------------------------
 
-    if text[0].isupper():
-        if word_count <= 15 and not text.endswith("."):
-            score += 2
+    if text[0].isupper() and word_count <= 15 and not text.endswith("."):
+        score += 2
 
-            # Colon bonus
-            if ":" in text:
-                score += 1
+        # Colon bonus
+        if ":" in text:
+            score += 1
 
-            # Title beginning with The / A / An
-            if re.match(
-                r"^(The|A|An)\s+",
-                text,
-                re.I,
-            ):
-                score += 1
+        # Title beginning with The / A / An
+        if re.match(
+            r"^(The|A|An)\s+",
+            text,
+            re.IGNORECASE,
+        ):
+            score += 1
 
     # ------------------------------------------------------------
     # Larger font size
@@ -1082,9 +1079,8 @@ def get_heading_score(
         element,
         next_element,
         document_avg_size,
-    ):
-        if not text.endswith(".") and not text.endswith(":"):
-            score += 1
+    ) and not text.endswith(".") and not text.endswith(":"):
+        score += 1
 
     # ------------------------------------------------------------
     # Bonus for short text
