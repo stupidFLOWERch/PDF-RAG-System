@@ -19,6 +19,10 @@ jobs:
       packages: write
 
     steps:
+      - name: Set image name
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -29,15 +33,15 @@ jobs:
       - name: Pull tested image
         run: |
           docker pull \
-            ghcr.io/${{ github.repository }}:${{ github.event.workflow_run.head_sha }}
+            ${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
 
       - name: Tag image as latest
         run: |
           docker tag \
-            ghcr.io/${{ github.repository }}:${{ github.event.workflow_run.head_sha }} \
-            ghcr.io/${{ github.repository }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }} \
+            ${{ env.IMAGE_NAME }}:latest
 
       - name: Push latest tag
         run: |
           docker push \
-            ghcr.io/${{ github.repository }}:latest
+            ${{ env.IMAGE_NAME }}:latest

@@ -9,17 +9,17 @@ on:
     branches:
       - main
 
-env: 
+env:
   PYTHONPATH: .
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: read
       packages: write
-      
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,11 +37,15 @@ jobs:
 
       - name: Run Ruff
         run: ruff check .
-      
+
+      - name: Set image name
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Build Docker image
         run: |
           docker build \
-            -t ghcr.io/${{ github.repository }}:${{ github.sha }} \
+            -t ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             .
 
       - name: Run Docker container
@@ -49,7 +53,7 @@ jobs:
           docker run -d \
             --name pdf-rag-test \
             -p 8000:8000 \
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
 
           sleep 10
 
@@ -66,4 +70,5 @@ jobs:
 
       - name: Push Docker image
         run: |
-          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+          docker push \
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
